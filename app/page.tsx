@@ -151,26 +151,70 @@ export default function VocabApp() {
       window.speechSynthesis.speak(utterance)
     }
   }
+  // Hàm biến đổi biệt danh/ID thành định dạng định danh nội bộ cho Supabase
+  const formatUsernameToAuthId = (input: string) => {
+    const clean = input.trim().toLowerCase().replace(/\s+/g, '')
+    // Nếu người dùng vẫn nhập email đầy đủ (như tài khoản admin của bạn) thì giữ nguyên
+    if (clean.includes('@')) return clean
+    // Nếu chỉ nhập tên/biệt danh/ID thì tự động gắn đuôi nội bộ
+    return `${clean}@vocab.local`
+  }
+
+  // Hàm hiển thị tên gọn gàng (cắt bỏ đuôi @vocab.local khi hiện lên màn hình)
+  const displayUsername = (authEmail: string) => {
+    return authEmail.replace('@vocab.local', '')
+  }
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault()
     setAuthLoading(true)
 
+    const rawUsername = email.trim() // Dùng chung biến state email hiện có để khỏi sửa nhiều chỗ
+    const authIdentifier = formatUsernameToAuthId(rawUsername)
+
     if (isSignUp) {
-      const { data, error } = await supabase.auth.signUp({ email, password })
+      const { data, error } = await supabase.auth.signUp({
+        email: authIdentifier,
+        password,
+      })
+
       if (error) {
-        alert('Lỗi đăng ký: ' + error.message)
-      } else if (!data.session) {
-        // Tự động đăng nhập ngay nếu Supabase chưa trả về session tức thì
-        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
-        if (signInError) {
-          alert('Đăng ký thành công! Vui lòng bấm Đăng nhập để vào học.')
-          setIsSignUp(false)
+        if (error.message.includes('already registered')) {
+          alert('Tên đăng nhập này đã có người dùng, hãy chọn tên khác!')
+        } else {
+          alert('Lỗi tạo tài khoản: ' + error.message)
+        }
+      } else {
+        // Lưu tên đăng nhập gốc (không đuôi) vào bảng gợi ý
+        if (data.user) {
+          await supabase.from('student_accounts').upsert({
+            id: data.user.id,
+            email: displayUsername(authIdentifier),
+            password_hint: password,
+          })
+        }
+
+        if (rememberMe) {
+          localStorage.setItem('vocab_saved_email', displayUsername(authIdentifier))
+          localStorage.setItem('vocab_saved_pass', password)
+        }
+
+        if (!data.session) {
+          await supabase.auth.signInWithPassword({ email: authIdentifier, password })
         }
       }
     } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) alert('Sai tài khoản hoặc mật khẩu!')
+      const { error } = await supabase.auth.signInWithPassword({
+        email: authIdentifier,
+        password,
+      })
+
+      if (error) {
+        alert('Sai tên đăng nhập hoặc mật khẩu!')
+      } else if (rememberMe) {
+        localStorage.setItem('vocab_saved_email', displayUsername(authIdentifier))
+        localStorage.setItem('vocab_saved_pass', password)
+      }
     }
 
     setAuthLoading(false)
@@ -575,15 +619,15 @@ export default function VocabApp() {
 
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Mật khẩu
+                  Tên đăng nhập / Biệt danh / ID
                 </label>
                 <input
-                  type="password"
+                  type="text"
                   required
-                  minLength={6}
-                  placeholder="Tối thiểu 6 ký tự"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  minLength={3}
+                  placeholder="VD: minhanh01 hoặc bietdanh"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
                   className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
                 />
               </div>

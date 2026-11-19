@@ -160,6 +160,7 @@ export default function VocabApp() {
     return `${clean}@vocab.local`
   }
 
+
   // Hàm hiển thị tên gọn gàng (cắt bỏ đuôi @vocab.local khi hiện lên màn hình)
   const displayUsername = (authEmail: string) => {
     return authEmail.replace('@vocab.local', '')

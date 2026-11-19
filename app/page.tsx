@@ -284,7 +284,7 @@ function Logo({ small }: { small?: boolean }) {
 
 /* ───────────────────────────── Main component ───────────────────────────── */
 
-export default function VocabApp() {
+function VocabAppInner() {
   /* Auth */
   const [user, setUser] = useState<any>(null)
   const [authReady, setAuthReady] = useState(false)
@@ -1689,4 +1689,22 @@ export default function VocabApp() {
       />
     </div>
   )
+}
+
+/**
+ * Wrapper chỉ render app sau khi đã chạy trên trình duyệt.
+ * Tránh lỗi prerender trên Vercel vì app dùng new Date(), localStorage, speechSynthesis...
+ */
+export default function VocabApp() {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+
+  if (!mounted) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+      </div>
+    )
+  }
+  return <VocabAppInner />
 }

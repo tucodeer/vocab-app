@@ -1,17 +1,21 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/utils/supabase'
 import { motion, AnimatePresence } from 'framer-motion'
 import confetti from 'canvas-confetti'
+import { Toaster, toast } from 'sonner'
 import {
-  Plus, Shuffle, Trash2, LogOut, BookOpen, CheckCircle2, RotateCcw,
-  Volume2, Sparkles, Calendar, ArrowRight, Moon, Sun, HelpCircle,
-  Keyboard, Layers, Flame, Mic, Headphones, BarChart3, AlertTriangle, MessageSquare
+  BookOpen, Layers, BarChart3, Users, Plus, Shuffle, Trash2, LogOut, CheckCircle2,
+  RotateCcw, Volume2, Sparkles, Moon, Sun, HelpCircle, Keyboard, Flame, Mic,
+  Headphones, AlertTriangle, MessageSquare, Search, X, Loader2, Eye, ArrowRight,
 } from 'lucide-react'
+
+/* ───────────────────────────── Types ───────────────────────────── */
 
 interface Vocab {
   id: string
+  user_id?: string
   word: string
   meaning: string
   part_of_speech?: string
@@ -32,93 +36,439 @@ interface DraftItem {
   collocations: string
 }
 
+interface StudentAccount {
+  id: string
+  email: string
+}
+
+type Page = 'words' | 'study' | 'progress' | 'class'
+type StudyMode = 'flashcard' | 'quiz' | 'spelling' | 'dictation' | 'speaking'
+type TimeFilter = 'srs' | 'leech' | 'today' | 'week' | 'all'
+type Rating = 'hard' | 'good' | 'easy' | 'wrong'
+type AnswerStatus = 'idle' | 'correct' | 'wrong' | 'revealed'
+
+/* ───────────────────────────── Constants & helpers ───────────────────────────── */
+
+// LƯU Ý: Đây chỉ dùng để ẩn/hiện giao diện. Quyền thật phải được chặn bằng RLS trên Supabase.
+const TEACHER_EMAIL = 'tujhoang1202@gmail.com'
+const INTERNAL_DOMAIN = '@vocab.local'
+
+const toAuthId = (input: string) => {
+  const clean = input.trim().toLowerCase().replace(/\s+/g, '')
+  return clean.includes('@') ? clean : `${clean}${INTERNAL_DOMAIN}`
+}
+const displayName = (email?: string) => (email ?? '').replace(INTERNAL_DOMAIN, '')
+
+const dayKey = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5)
+const isDue = (v: Vocab) => !v.next_review_at || new Date(v.next_review_at) <= new Date()
+const isMastered = (v: Vocab) => (v.interval_days || 0) >= 4
+
+const STUDY_MODES: { id: StudyMode; label: string; desc: string; icon: typeof Layers }[] = [
+  { id: 'flashcard', label: 'Flashcard', desc: 'Lật thẻ & tự đánh giá', icon: Layers },
+  { id: 'quiz', label: 'Trắc nghiệm', desc: 'Chọn nghĩa đúng', icon: HelpCircle },
+  { id: 'spelling', label: 'Chính tả', desc: 'Xem nghĩa, gõ từ', icon: Keyboard },
+  { id: 'dictation', label: 'Nghe chép', desc: 'Nghe và gõ lại', icon: Headphones },
+  { id: 'speaking', label: 'Phát âm', desc: 'Đọc to bằng micro', icon: Mic },
+]
+
+const TIME_FILTERS: { id: TimeFilter; label: string }[] = [
+  { id: 'srs', label: 'Đến hạn ôn' },
+  { id: 'leech', label: 'Hay sai' },
+  { id: 'today', label: 'Hôm nay' },
+  { id: 'week', label: '7 ngày' },
+  { id: 'all', label: 'Tất cả' },
+]
+
+/* ───────────────────────────── Design tokens ───────────────────────────── */
+
+const ui = {
+  field:
+    'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500',
+  card: 'rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900',
+  label: 'text-xs font-medium text-slate-500 dark:text-slate-400',
+  muted: 'text-slate-500 dark:text-slate-400',
+}
+
+/* ───────────────────────────── UI primitives ───────────────────────────── */
+
+type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
+
+function Button({
+  variant = 'primary', loading, icon: Icon, className = '', children, ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: BtnVariant
+  loading?: boolean
+  icon?: typeof Plus
+}) {
+  const styles: Record<BtnVariant, string> = {
+    primary: 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm',
+    secondary:
+      'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800',
+    ghost: 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800',
+    danger: 'bg-red-600 text-white hover:bg-red-700 shadow-sm',
+  }
+  return (
+    <button
+      {...props}
+      disabled={props.disabled || loading}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
+    >
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : Icon ? <Icon className="h-4 w-4" /> : null}
+      {children}
+    </button>
+  )
+}
+
+function Card({ className = '', children }: { className?: string; children: React.ReactNode }) {
+  return <div className={`${ui.card} ${className}`}>{children}</div>
+}
+
+function Badge({
+  tone = 'slate', children,
+}: { tone?: 'slate' | 'indigo' | 'emerald' | 'amber' | 'red'; children: React.ReactNode }) {
+  const tones = {
+    slate: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+    indigo: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300',
+    emerald: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+    amber: 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+    red: 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300',
+  }
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>
+      {children}
+    </span>
+  )
+}
+
+function StatCard({
+  label, value, hint, icon: Icon, tone = 'indigo',
+}: {
+  label: string
+  value: React.ReactNode
+  hint?: string
+  icon: typeof Flame
+  tone?: 'indigo' | 'emerald' | 'amber' | 'red'
+}) {
+  const tones = {
+    indigo: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300',
+    emerald: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300',
+    amber: 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300',
+    red: 'bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-300',
+  }
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className={ui.label}>{label}</p>
+          <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
+          {hint && <p className={`mt-1 text-xs ${ui.muted}`}>{hint}</p>}
+        </div>
+        <div className={`rounded-lg p-2 ${tones[tone]}`}>
+          <Icon className="h-4 w-4" />
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function EmptyState({
+  icon: Icon, title, description, action,
+}: { icon: typeof BookOpen; title: string; description?: string; action?: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center px-6 py-14 text-center">
+      <div className="mb-4 rounded-full bg-slate-100 p-3 text-slate-400 dark:bg-slate-800">
+        <Icon className="h-6 w-6" />
+      </div>
+      <p className="text-sm font-medium">{title}</p>
+      {description && <p className={`mt-1 max-w-sm text-sm ${ui.muted}`}>{description}</p>}
+      {action && <div className="mt-5">{action}</div>}
+    </div>
+  )
+}
+
+function PageHeader({
+  title, description, actions,
+}: { title: string; description?: string; actions?: React.ReactNode }) {
+  return (
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {description && <p className={`mt-1 text-sm ${ui.muted}`}>{description}</p>}
+      </div>
+      {actions}
+    </div>
+  )
+}
+
+function Skeleton({ className = '' }: { className?: string }) {
+  return <div className={`animate-pulse rounded-md bg-slate-200 dark:bg-slate-800 ${className}`} />
+}
+
+function ConfirmDialog({
+  open, title, description, confirmLabel = 'Xoá', onConfirm, onCancel,
+}: {
+  open: boolean
+  title: string
+  description: string
+  confirmLabel?: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+          onClick={onCancel}
+          role="dialog"
+          aria-modal="true"
+        >
+          <motion.div
+            initial={{ scale: 0.96, y: 8 }}
+            animate={{ scale: 1, y: 0 }}
+            exit={{ scale: 0.96, y: 8 }}
+            onClick={e => e.stopPropagation()}
+            className={`${ui.card} w-full max-w-sm p-6 shadow-xl`}
+          >
+            <h3 className="text-base font-semibold">{title}</h3>
+            <p className={`mt-2 text-sm ${ui.muted}`}>{description}</p>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="secondary" onClick={onCancel}>Huỷ</Button>
+              <Button variant="danger" onClick={onConfirm}>{confirmLabel}</Button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+function Segmented<T extends string>({
+  value, options, onChange,
+}: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <div className="inline-flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+      {options.map(o => (
+        <button
+          key={o.id}
+          onClick={() => onChange(o.id)}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
+            value === o.id
+              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
+              : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Logo({ small }: { small?: boolean }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className={`flex items-center justify-center rounded-lg bg-indigo-600 text-white ${small ? 'h-8 w-8' : 'h-9 w-9'}`}>
+        <BookOpen className="h-4 w-4" />
+      </div>
+      <span className="text-base font-semibold tracking-tight">VocabDaily</span>
+    </div>
+  )
+}
+
+/* ───────────────────────────── Main component ───────────────────────────── */
+
 export default function VocabApp() {
+  /* Auth */
   const [user, setUser] = useState<any>(null)
-  const [email, setEmail] = useState('')
+  const [authReady, setAuthReady] = useState(false)
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [isSignUp, setIsSignUp] = useState(false)
   const [darkMode, setDarkMode] = useState(false)
-  const isTeacher = user?.email === 'tujhoang1202@gmail.com'
+  const isTeacher = user?.email === TEACHER_EMAIL
 
-  // State nhập từ
+  /* Data */
+  const [vocabs, setVocabs] = useState<Vocab[]>([])
+  const [classVocabs, setClassVocabs] = useState<Vocab[]>([])
+  const [accounts, setAccounts] = useState<Record<string, string>>({})
+  const [loadingData, setLoadingData] = useState(true)
+  const [page, setPage] = useState<Page>('words')
+
+  /* Add words */
   const [wordsInput, setWordsInput] = useState('')
   const [draftItems, setDraftItems] = useState<DraftItem[]>([])
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [search, setSearch] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<Vocab | null>(null)
 
-  // State dữ liệu & điều hướng
-  const [vocabs, setVocabs] = useState<Vocab[]>([])
-  const [activeTab, setActiveTab] = useState<'add' | 'study' | 'dashboard'>('add')
-  const [timeFilter, setTimeFilter] = useState<'srs' | 'today' | 'week' | 'month' | 'all' | 'leech'>('srs')
-
-  // State chế độ ôn tập (5 chế độ)
-  const [studyMode, setStudyMode] = useState<'flashcard' | 'quiz' | 'spelling' | 'dictation' | 'speaking'>('flashcard')
+  /* Study */
+  const [studyMode, setStudyMode] = useState<StudyMode>('flashcard')
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('srs')
   const [studyQueue, setStudyQueue] = useState<Vocab[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isFlipped, setIsFlipped] = useState(false)
-
-  // State Quiz / Spelling / Dictation / Speaking
   const [quizOptions, setQuizOptions] = useState<string[]>([])
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [textInput, setTextInput] = useState('')
-  const [answerStatus, setAnswerStatus] = useState<'idle' | 'correct' | 'wrong'>('idle')
+  const [answerStatus, setAnswerStatus] = useState<AnswerStatus>('idle')
   const [score, setScore] = useState(0)
-
-  // State chấm điểm phát âm Micro
   const [isListening, setIsListening] = useState(false)
   const [spokenText, setSpokenText] = useState('')
   const [speechResult, setSpeechResult] = useState<'idle' | 'pass' | 'fail'>('idle')
+  const [answered, setAnswered] = useState(false)
 
-  // State Gamification & Mini-Story
-  const [streak, setStreak] = useState(1)
+  /* Gamification & story */
+  const [streak, setStreak] = useState(0)
   const [todayReviewed, setTodayReviewed] = useState(0)
-  const [storyData, setStoryData] = useState<{ storyEn: string; storyVi: string; highlightedWords: string[] } | null>(null)
+  const [storyData, setStoryData] = useState<{ storyEn: string; storyVi: string } | null>(null)
   const [isGeneratingStory, setIsGeneratingStory] = useState(false)
 
+  /* Class view */
+  const [studentSearch, setStudentSearch] = useState('')
+
+  /* ───── Effects ───── */
+
   useEffect(() => {
-    const savedTheme = localStorage.getItem('vocab-dark-mode')
-    if (savedTheme === 'true') setDarkMode(true)
+    const saved = localStorage.getItem('vocab-dark-mode')
+    if (saved === 'true') setDarkMode(true)
 
-    // Tính chuỗi ngày học (Daily Streak)
-    const todayStr = new Date().toDateString()
-    const lastStudy = localStorage.getItem('vocab-last-study')
-    const savedStreak = Number(localStorage.getItem('vocab-streak') || '1')
-    const savedCount = Number(localStorage.getItem(`vocab-count-${todayStr}`) || '0')
-    setTodayReviewed(savedCount)
-
-    if (lastStudy) {
-      const diff = (new Date(todayStr).getTime() - new Date(lastStudy).getTime()) / (1000 * 3600 * 24)
-      if (diff === 1) {
-        setStreak(savedStreak + 1)
-      } else if (diff === 0) {
-        setStreak(savedStreak)
-      } else {
-        setStreak(1)
-      }
+    const today = dayKey()
+    const last = localStorage.getItem('vocab-last-study')
+    const savedStreak = Number(localStorage.getItem('vocab-streak') || '0')
+    setTodayReviewed(Number(localStorage.getItem(`vocab-count-${today}`) || '0'))
+    if (last) {
+      const diff = Math.round((new Date(today).getTime() - new Date(last).getTime()) / 86400000)
+      setStreak(diff <= 1 ? savedStreak : 0)
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchVocabs(session.user.id, session.user.email)
+      setAuthReady(true)
     })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchVocabs(session.user.id, session.user.email)
     })
-
     return () => subscription.unsubscribe()
   }, [])
 
-  const recordStudyActivity = () => {
-    const todayStr = new Date().toDateString()
-    localStorage.setItem('vocab-last-study', todayStr)
-    localStorage.setItem('vocab-streak', String(streak))
-    const nextCount = todayReviewed + 1
-    setTodayReviewed(nextCount)
-    localStorage.setItem(`vocab-count-${todayStr}`, String(nextCount))
-  }
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+  }, [darkMode])
+
+  const fetchVocabs = useCallback(async () => {
+    if (!user) return
+    setLoadingData(true)
+    const { data, error } = await supabase
+      .from('vocabularies')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+    if (error) toast.error('Không tải được sổ từ vựng')
+    else setVocabs(data ?? [])
+
+    if (user.email === TEACHER_EMAIL) {
+      const [{ data: all }, { data: accs }] = await Promise.all([
+        supabase.from('vocabularies').select('*').order('created_at', { ascending: false }),
+        supabase.from('student_accounts').select('id,email'),
+      ])
+      setClassVocabs(all ?? [])
+      const map: Record<string, string> = {}
+      ;(accs as StudentAccount[] | null)?.forEach(a => { map[a.id] = a.email })
+      setAccounts(map)
+    }
+    setLoadingData(false)
+  }, [user])
+
+  useEffect(() => {
+    if (user) fetchVocabs()
+    else {
+      setVocabs([])
+      setClassVocabs([])
+    }
+  }, [user, fetchVocabs])
+
+  /* ───── Derived ───── */
+
+  const dueCount = useMemo(() => vocabs.filter(isDue).length, [vocabs])
+  const masteredCount = useMemo(() => vocabs.filter(isMastered).length, [vocabs])
+  const leechWords = useMemo(
+    () => vocabs.filter(v => (v.wrong_count || 0) > 0).sort((a, b) => (b.wrong_count || 0) - (a.wrong_count || 0)),
+    [vocabs]
+  )
+
+  const filteredStudy = useMemo(() => {
+    const now = new Date()
+    return vocabs.filter(v => {
+      if (timeFilter === 'srs') return isDue(v)
+      if (timeFilter === 'leech') return (v.wrong_count || 0) > 0
+      if (timeFilter === 'all') return true
+      const created = new Date(v.created_at)
+      if (timeFilter === 'today') return created.toDateString() === now.toDateString()
+      return (now.getTime() - created.getTime()) / 86400000 <= 7
+    })
+  }, [vocabs, timeFilter])
+
+  const searchedVocabs = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return vocabs
+    return vocabs.filter(v => v.word.toLowerCase().includes(q) || v.meaning.toLowerCase().includes(q))
+  }, [vocabs, search])
+
+  const groupedByDate = useMemo(() => {
+    return searchedVocabs.reduce((acc: Record<string, Vocab[]>, item) => {
+      const key = new Date(item.created_at).toLocaleDateString('vi-VN', {
+        weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+      })
+      ;(acc[key] ||= []).push(item)
+      return acc
+    }, {})
+  }, [searchedVocabs])
+
+  const last7Days = useMemo(() => {
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date()
+      d.setDate(d.getDate() - (6 - i))
+      return { key: dayKey(d), label: d.toLocaleDateString('vi-VN', { weekday: 'short' }), count: 0 }
+    })
+    vocabs.forEach(v => {
+      const k = dayKey(new Date(v.created_at))
+      const slot = days.find(d => d.key === k)
+      if (slot) slot.count += 1
+    })
+    return days
+  }, [vocabs])
+
+  const students = useMemo(() => {
+    const byUser: Record<string, Vocab[]> = {}
+    classVocabs.forEach(v => {
+      if (!v.user_id || v.user_id === user?.id) return
+      ;(byUser[v.user_id] ||= []).push(v)
+    })
+    return Object.entries(byUser)
+      .map(([id, list]) => ({
+        id,
+        name: displayName(accounts[id]) || `Học sinh ${id.slice(0, 6)}`,
+        total: list.length,
+        mastered: list.filter(isMastered).length,
+        reviews: list.reduce((s, v) => s + (v.review_count || 0), 0),
+        leech: list.filter(v => (v.wrong_count || 0) > 0).length,
+        topWrong: [...list].filter(v => (v.wrong_count || 0) > 0).sort((a, b) => (b.wrong_count || 0) - (a.wrong_count || 0)).slice(0, 3),
+        last: list.reduce((m, v) => (v.created_at > m ? v.created_at : m), list[0].created_at),
+      }))
+      .filter(s => s.name.toLowerCase().includes(studentSearch.trim().toLowerCase()))
+      .sort((a, b) => b.reviews - a.reviews)
+  }, [classVocabs, accounts, user, studentSearch])
+
+  /* ───── Actions ───── */
 
   const toggleDarkMode = () => {
     const next = !darkMode
@@ -126,314 +476,234 @@ export default function VocabApp() {
     localStorage.setItem('vocab-dark-mode', String(next))
   }
 
-  const fetchVocabs = async (userId: string, userEmail?: string) => {
-    let query = supabase
-      .from('vocabularies')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    // Nếu không phải giáo viên thì chỉ lọc đúng từ của học sinh đó
-    if (userEmail !== 'tujhoang1202@gmail.com') {
-      query = query.eq('user_id', userId)
-    }
-
-    const { data, error } = await query
-    if (!error && data) setVocabs(data)
-  }
-
   const speakText = (text: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
-    if ('speechSynthesis' in window) {
+    e?.stopPropagation()
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel()
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = 'en-US'
-      utterance.rate = 0.9
-      window.speechSynthesis.speak(utterance)
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = 'en-US'
+      u.rate = 0.9
+      window.speechSynthesis.speak(u)
     }
   }
-  // Hàm biến đổi biệt danh/ID thành định dạng định danh nội bộ cho Supabase
-  const formatUsernameToAuthId = (input: string) => {
-    const clean = input.trim().toLowerCase().replace(/\s+/g, '')
-    // Nếu người dùng vẫn nhập email đầy đủ (như tài khoản admin của bạn) thì giữ nguyên
-    if (clean.includes('@')) return clean
-    // Nếu chỉ nhập tên/biệt danh/ID thì tự động gắn đuôi nội bộ
-    return `${clean}@vocab.local`
-  }
 
-
-  // Hàm hiển thị tên gọn gàng (cắt bỏ đuôi @vocab.local khi hiện lên màn hình)
-  const displayUsername = (authEmail: string) => {
-    return authEmail.replace('@vocab.local', '')
+  const recordStudyActivity = () => {
+    const today = dayKey()
+    const last = localStorage.getItem('vocab-last-study')
+    const saved = Number(localStorage.getItem('vocab-streak') || '0')
+    let next = saved
+    if (last !== today) {
+      const diff = last ? Math.round((new Date(today).getTime() - new Date(last).getTime()) / 86400000) : 99
+      next = diff === 1 ? saved + 1 : 1
+      localStorage.setItem('vocab-streak', String(next))
+      localStorage.setItem('vocab-last-study', today)
+      setStreak(next)
+    }
+    const count = todayReviewed + 1
+    setTodayReviewed(count)
+    localStorage.setItem(`vocab-count-${today}`, String(count))
   }
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault()
     setAuthLoading(true)
-    const rememberMe = true
-
-    const rawUsername = email.trim()
-    const authIdentifier = formatUsernameToAuthId(rawUsername)
+    const authId = toAuthId(username)
 
     if (isSignUp) {
-      const { data, error } = await supabase.auth.signUp({
-        email: authIdentifier,
-        password,
-      })
-
+      const { data, error } = await supabase.auth.signUp({ email: authId, password })
       if (error) {
-        if (error.message.includes('already registered')) {
-          alert('Tên đăng nhập này đã có người dùng, hãy chọn tên khác!')
-        } else {
-          alert('Lỗi tạo tài khoản: ' + error.message)
-        }
+        toast.error(error.message.includes('already registered') ? 'Tên đăng nhập đã được sử dụng' : `Không thể tạo tài khoản: ${error.message}`)
       } else {
-        // Lưu tên đăng nhập gốc (không đuôi) vào bảng gợi ý
         if (data.user) {
-          await supabase.from('student_accounts').upsert({
-            id: data.user.id,
-            email: displayUsername(authIdentifier),
-            password_hint: password,
-          })
+          // Chỉ lưu tên hiển thị. KHÔNG lưu mật khẩu ở bất kỳ đâu.
+          await supabase.from('student_accounts').upsert({ id: data.user.id, email: displayName(authId) })
         }
-
-        if (rememberMe) {
-          localStorage.setItem('vocab_saved_email', displayUsername(authIdentifier))
-          localStorage.setItem('vocab_saved_pass', password)
-        }
-
-        if (!data.session) {
-          await supabase.auth.signInWithPassword({ email: authIdentifier, password })
-        }
+        if (!data.session) await supabase.auth.signInWithPassword({ email: authId, password })
+        toast.success('Tạo tài khoản thành công')
       }
     } else {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: authIdentifier,
-        password,
-      })
-
-      if (error) {
-        alert('Sai tên đăng nhập hoặc mật khẩu!')
-      } else if (rememberMe) {
-        localStorage.setItem('vocab_saved_email', displayUsername(authIdentifier))
-        localStorage.setItem('vocab_saved_pass', password)
-      }
+      const { error } = await supabase.auth.signInWithPassword({ email: authId, password })
+      if (error) toast.error('Sai tên đăng nhập hoặc mật khẩu')
     }
-
     setAuthLoading(false)
   }
 
-  // Phân tích từ vựng tự động
   const handleAnalyzeWords = async () => {
-    const wordLines = wordsInput.split('\n').map(w => w.trim()).filter(Boolean)
-    if (wordLines.length === 0) return alert('Hãy nhập ít nhất 1 từ tiếng Anh!')
+    const lines = wordsInput.split('\n').map(w => w.trim()).filter(Boolean)
+    if (lines.length === 0) return toast.error('Hãy nhập ít nhất 1 từ tiếng Anh')
 
     setIsAnalyzing(true)
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ words: wordLines }),
+        body: JSON.stringify({ words: lines }),
       })
       const data = await res.json()
       if (data.results) {
         setDraftItems(
-          wordLines.map((w, idx) => ({
+          lines.map((w, i) => ({
             word: w,
-            meaning: data.results[idx]?.meaning || '',
-            pos: data.results[idx]?.pos || '',
-            example: data.results[idx]?.example || '',
-            collocations: data.results[idx]?.collocations || '',
+            meaning: data.results[i]?.meaning || '',
+            pos: data.results[i]?.pos || '',
+            example: data.results[i]?.example || '',
+            collocations: data.results[i]?.collocations || '',
           }))
         )
-      }
+      } else toast.error('Không nhận được kết quả phân tích')
     } catch {
-      alert('Lỗi kết nối khi phân tích từ, thử lại sau nhé.')
+      toast.error('Lỗi kết nối, vui lòng thử lại')
     }
     setIsAnalyzing(false)
   }
 
-  const updateDraftItem = (index: number, field: keyof DraftItem, value: string) => {
-    const updated = [...draftItems]
-    updated[index][field] = value
-    setDraftItems(updated)
-  }
+  const updateDraft = (index: number, field: keyof DraftItem, value: string) =>
+    setDraftItems(items => items.map((it, i) => (i === index ? { ...it, [field]: value } : it)))
 
   const handleSaveVocabs = async () => {
-    const validItems = draftItems.filter(item => item.word.trim() && item.meaning.trim())
-    if (validItems.length === 0) return alert('Hãy phân tích và điền đầy đủ nghĩa trước khi lưu!')
+    const valid = draftItems.filter(i => i.word.trim() && i.meaning.trim())
+    if (valid.length === 0) return toast.error('Hãy điền đầy đủ nghĩa trước khi lưu')
 
     setIsSaving(true)
-    const records = validItems.map(item => ({
+    const records = valid.map(i => ({
       user_id: user.id,
-      word: item.word.trim(),
-      meaning: item.meaning.trim(),
-      part_of_speech: item.pos.trim(),
-      example: item.example.trim(),
-      collocations: item.collocations.trim(),
+      word: i.word.trim(),
+      meaning: i.meaning.trim(),
+      part_of_speech: i.pos.trim(),
+      example: i.example.trim(),
+      collocations: i.collocations.trim(),
       next_review_at: new Date().toISOString(),
       interval_days: 0,
       wrong_count: 0,
       review_count: 0,
     }))
-
     const { error } = await supabase.from('vocabularies').insert(records)
-    if (error) {
-      alert('Lỗi khi lưu: ' + error.message)
-    } else {
+    if (error) toast.error(`Không thể lưu: ${error.message}`)
+    else {
+      toast.success(`Đã lưu ${records.length} từ vào sổ`)
       setWordsInput('')
       setDraftItems([])
-      fetchVocabs(user.id)
-      confetti({ particleCount: 45, spread: 55, origin: { y: 0.7 } })
+      fetchVocabs()
+      confetti({ particleCount: 40, spread: 55, origin: { y: 0.7 } })
     }
     setIsSaving(false)
   }
 
-  const handleDelete = async (id: string) => {
-    await supabase.from('vocabularies').delete().eq('id', id)
-    setVocabs(vocabs.filter(v => v.id !== id))
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    const { error } = await supabase.from('vocabularies').delete().eq('id', deleteTarget.id)
+    if (error) toast.error('Không thể xoá từ này')
+    else {
+      setVocabs(v => v.filter(x => x.id !== deleteTarget.id))
+      toast.success(`Đã xoá "${deleteTarget.word}"`)
+    }
+    setDeleteTarget(null)
   }
 
-  // Cập nhật thuật toán Spaced Repetition (SRS) & thống kê lỗi lên Supabase
-  const updateVocabProgress = async (vocab: Vocab, rating: 'hard' | 'good' | 'easy' | 'wrong') => {
+  const updateVocabProgress = async (vocab: Vocab, rating: Rating) => {
     recordStudyActivity()
     const now = new Date()
     let nextDate = new Date()
-    let nextInterval = vocab.interval_days || 0
-    let wrongCount = vocab.wrong_count || 0
-    const reviewCount = (vocab.review_count || 0) + 1
+    let interval = vocab.interval_days || 0
+    let wrong = vocab.wrong_count || 0
+    const reviews = (vocab.review_count || 0) + 1
 
     if (rating === 'hard' || rating === 'wrong') {
-      nextDate = new Date(now.getTime() + 10 * 60 * 1000) // Ôn lại sau 10 phút
-      nextInterval = 0
-      if (rating === 'wrong') wrongCount += 1
+      nextDate = new Date(now.getTime() + 10 * 60 * 1000)
+      interval = 0
+      if (rating === 'wrong') wrong += 1
     } else if (rating === 'good') {
-      nextInterval = Math.max(1, nextInterval === 0 ? 1 : nextInterval * 2)
-      nextDate = new Date(now.getTime() + nextInterval * 24 * 3600 * 1000)
-    } else if (rating === 'easy') {
-      nextInterval = Math.max(4, nextInterval === 0 ? 5 : nextInterval * 3)
-      nextDate = new Date(now.getTime() + nextInterval * 24 * 3600 * 1000)
+      interval = Math.max(1, interval === 0 ? 1 : interval * 2)
+      nextDate = new Date(now.getTime() + interval * 86400000)
+    } else {
+      interval = Math.max(4, interval === 0 ? 5 : interval * 3)
+      nextDate = new Date(now.getTime() + interval * 86400000)
     }
 
-    await supabase
-      .from('vocabularies')
-      .update({
-        next_review_at: nextDate.toISOString(),
-        interval_days: nextInterval,
-        wrong_count: wrongCount,
-        review_count: reviewCount,
-      })
-      .eq('id', vocab.id)
-
-    setVocabs(prev =>
-      prev.map(v =>
-        v.id === vocab.id
-          ? { ...v, next_review_at: nextDate.toISOString(), interval_days: nextInterval, wrong_count: wrongCount, review_count: reviewCount }
-          : v
-      )
-    )
-  }
-
-  const getFilteredVocabs = () => {
-    const now = new Date()
-    return vocabs.filter(v => {
-      if (timeFilter === 'srs') {
-        if (!v.next_review_at) return true
-        return new Date(v.next_review_at) <= now
-      }
-      if (timeFilter === 'leech') {
-        return (v.wrong_count || 0) > 0
-      }
-      const created = new Date(v.created_at)
-      const diffDays = (now.getTime() - created.getTime()) / (1000 * 3600 * 24)
-      if (timeFilter === 'today') return created.toDateString() === now.toDateString()
-      if (timeFilter === 'week') return diffDays <= 7
-      if (timeFilter === 'month') return diffDays <= 30
-      return true
-    })
-  }
-
-  const generateQuizOptions = (currentVocab: Vocab, allPool: Vocab[]) => {
-    const otherMeanings = Array.from(new Set(allPool.filter(v => v.id !== currentVocab.id).map(v => v.meaning)))
-    const distractors = otherMeanings.sort(() => Math.random() - 0.5).slice(0, 3)
-    const fallbacks = ['sự kiên trì', 'tình huống', 'khám phá', 'phát triển', 'tự tin']
-    while (distractors.length < 3) {
-      const pick = fallbacks[distractors.length]
-      if (pick !== currentVocab.meaning && !distractors.includes(pick)) distractors.push(pick)
-      else distractors.push(`nghĩa khác #${distractors.length + 1}`)
+    const patch = {
+      next_review_at: nextDate.toISOString(),
+      interval_days: interval,
+      wrong_count: wrong,
+      review_count: reviews,
     }
-    return [...distractors, currentVocab.meaning].sort(() => Math.random() - 0.5)
+    setVocabs(prev => prev.map(v => (v.id === vocab.id ? { ...v, ...patch } : v)))
+    const { error } = await supabase.from('vocabularies').update(patch).eq('id', vocab.id)
+    if (error) toast.error('Không thể lưu tiến độ')
+  }
+
+  /* ───── Study logic ───── */
+
+  const makeQuizOptions = (current: Vocab, pool: Vocab[]) => {
+    const others = Array.from(new Set(pool.filter(v => v.id !== current.id).map(v => v.meaning)))
+    const distractors = shuffle(others).slice(0, 3)
+    const fallbacks = ['sự kiên trì', 'tình huống', 'khám phá', 'phát triển', 'tự tin', 'cơ hội']
+    for (const f of fallbacks) {
+      if (distractors.length >= 3) break
+      if (f !== current.meaning && !distractors.includes(f)) distractors.push(f)
+    }
+    return shuffle([...distractors, current.meaning])
+  }
+
+  const resetCardState = () => {
+    setIsFlipped(false)
+    setSelectedOption(null)
+    setTextInput('')
+    setAnswerStatus('idle')
+    setSpokenText('')
+    setSpeechResult('idle')
+    setAnswered(false)
+  }
+
+  const prepareCard = (card: Vocab) => {
+    if (studyMode === 'quiz') setQuizOptions(makeQuizOptions(card, vocabs))
+    else if (studyMode === 'spelling' || studyMode === 'dictation') speakText(card.word)
   }
 
   const startStudySession = (customQueue?: Vocab[]) => {
-    const pool = customQueue || getFilteredVocabs()
-    if (pool.length === 0) return alert('Không có từ vựng nào phù hợp trong mục này!')
-    if (studyMode === 'quiz' && vocabs.length < 2) {
-      return alert('Cần ít nhất 2 từ trong kho để tạo câu hỏi Trắc nghiệm!')
-    }
-
-    const shuffled = [...pool].sort(() => Math.random() - 0.5)
-    setStudyQueue(shuffled)
+    const pool = customQueue ?? filteredStudy
+    if (pool.length === 0) return toast.error('Không có từ nào phù hợp với bộ lọc này')
+    if (studyMode === 'quiz' && vocabs.length < 2) return toast.error('Cần ít nhất 2 từ để tạo câu hỏi trắc nghiệm')
+    const queue = shuffle(pool)
+    setStudyQueue(queue)
     setCurrentIndex(0)
     setScore(0)
-    setIsFlipped(false)
-    setSelectedOption(null)
-    setTextInput('')
-    setAnswerStatus('idle')
-    setSpokenText('')
-    setSpeechResult('idle')
-
-    if (studyMode === 'quiz') {
-      setQuizOptions(generateQuizOptions(shuffled[0], vocabs))
-    } else if (studyMode === 'spelling' || studyMode === 'dictation') {
-      speakText(shuffled[0].word)
-    }
+    resetCardState()
+    prepareCard(queue[0])
   }
 
-  const advanceToNextCard = () => {
-    const nextIdx = currentIndex + 1
-    setIsFlipped(false)
-    setSelectedOption(null)
-    setTextInput('')
-    setAnswerStatus('idle')
-    setSpokenText('')
-    setSpeechResult('idle')
-
+  const advance = () => {
+    const next = currentIndex + 1
+    resetCardState()
     setTimeout(() => {
-      setCurrentIndex(nextIdx)
-      if (nextIdx < studyQueue.length) {
-        if (studyMode === 'quiz') {
-          setQuizOptions(generateQuizOptions(studyQueue[nextIdx], vocabs))
-        } else if (studyMode === 'spelling' || studyMode === 'dictation') {
-          speakText(studyQueue[nextIdx].word)
-        }
-      } else {
-        confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } })
-      }
-    }, 150)
+      setCurrentIndex(next)
+      if (next < studyQueue.length) prepareCard(studyQueue[next])
+      else confetti({ particleCount: 100, spread: 75, origin: { y: 0.6 } })
+    }, 120)
   }
 
-  // Xử lý chọn đáp án Trắc nghiệm
+  const rateFlashcard = (rating: Rating) => {
+    updateVocabProgress(studyQueue[currentIndex], rating)
+    advance()
+  }
+
   const handleSelectQuiz = (option: string) => {
     if (selectedOption) return
-    setSelectedOption(option)
     const current = studyQueue[currentIndex]
+    setSelectedOption(option)
     if (option === current.meaning) {
       setScore(s => s + 1)
       speakText(current.word)
       updateVocabProgress(current, 'good')
-    } else {
-      updateVocabProgress(current, 'wrong')
-    }
+    } else updateVocabProgress(current, 'wrong')
   }
 
-  // Xử lý kiểm tra Spelling & Dictation
-  const handleCheckTextAnswer = (e: React.FormEvent) => {
+  const handleCheckText = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!textInput.trim() || answerStatus !== 'idle') return
+    if (!textInput.trim() || answered) return
     const current = studyQueue[currentIndex]
-    const isCorrect = textInput.trim().toLowerCase() === current.word.trim().toLowerCase()
-    if (isCorrect) {
+    if (textInput.trim().toLowerCase() === current.word.trim().toLowerCase()) {
       setAnswerStatus('correct')
+      setAnswered(true)
       setScore(s => s + 1)
       speakText(current.word)
       updateVocabProgress(current, 'good')
@@ -443,918 +713,980 @@ export default function VocabApp() {
     }
   }
 
-  // Chấm điểm phát âm bằng Micro (Web Speech API)
-  const handleStartSpeechRecognition = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      return alert('Trình duyệt của bạn chưa hỗ trợ nhận diện giọng nói. Hãy dùng Google Chrome hoặc Edge nhé!')
-    }
+  const revealAnswer = () => {
+    if (answered) return
+    setAnswered(true)
+    setAnswerStatus('revealed')
+    setTextInput(studyQueue[currentIndex].word)
+    updateVocabProgress(studyQueue[currentIndex], 'wrong')
+  }
 
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
-
+  const startSpeech = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) return toast.error('Trình duyệt chưa hỗ trợ nhận diện giọng nói. Hãy dùng Chrome hoặc Edge.')
+    const rec = new SR()
+    rec.lang = 'en-US'
+    rec.interimResults = false
+    rec.maxAlternatives = 1
     setIsListening(true)
     setSpeechResult('idle')
     setSpokenText('')
 
-    recognition.onresult = (event: any) => {
+    rec.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript.trim().toLowerCase()
-      const target = studyQueue[currentIndex].word.trim().toLowerCase()
+      const current = studyQueue[currentIndex]
       setSpokenText(transcript)
       setIsListening(false)
-
-      if (transcript.includes(target) || target === transcript) {
+      if (transcript.includes(current.word.trim().toLowerCase())) {
         setSpeechResult('pass')
         setScore(s => s + 1)
-        updateVocabProgress(studyQueue[currentIndex], 'good')
+        updateVocabProgress(current, 'good')
       } else {
         setSpeechResult('fail')
-        updateVocabProgress(studyQueue[currentIndex], 'wrong')
+        updateVocabProgress(current, 'wrong')
       }
     }
-
-    recognition.onerror = () => {
+    rec.onerror = () => {
       setIsListening(false)
-      alert('Không nghe rõ giọng nói, hãy kiểm tra quyền Micro trên trình duyệt và thử lại!')
+      toast.error('Không nghe rõ. Hãy kiểm tra quyền micro và thử lại')
     }
-
-    recognition.start()
+    rec.start()
   }
 
-  // Tạo đoạn hội thoại ngắn từ từ vựng
-  const handleGenerateMiniStory = async () => {
-    if (vocabs.length === 0) return alert('Hãy thêm ít nhất 1 từ vựng vào sổ trước!')
+  const handleGenerateStory = async () => {
+    if (vocabs.length === 0) return toast.error('Hãy thêm ít nhất 1 từ vào sổ trước')
     setIsGeneratingStory(true)
     try {
-      const recentWords = vocabs.slice(0, 5).map(v => v.word)
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'story', words: recentWords }),
+        body: JSON.stringify({ action: 'story', words: vocabs.slice(0, 5).map(v => v.word) }),
       })
       const data = await res.json()
       if (data.storyEn) setStoryData(data)
+      else toast.error('Không thể tạo hội thoại lúc này')
     } catch {
-      alert('Không thể tạo đoạn hội thoại lúc này.')
+      toast.error('Không thể tạo hội thoại lúc này')
     }
     setIsGeneratingStory(false)
   }
 
-  const bgMain = darkMode ? 'bg-slate-950 text-slate-100' : 'bg-gradient-to-b from-slate-50 to-slate-100/80 text-slate-800'
-  const cardBg = darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/80'
-  const inputBg = darkMode
-    ? 'bg-slate-800/80 border-slate-700 text-slate-100 focus:bg-slate-800'
-    : 'bg-slate-50 border-slate-200 text-slate-800 focus:bg-white'
+  const inSession = page === 'study' && studyQueue.length > 0 && currentIndex < studyQueue.length
 
-  
-    if (!user) {
+  // Phím tắt: Space lật thẻ · 1/2/3 chấm độ nhớ
+  useEffect(() => {
+    if (!inSession || studyMode !== 'flashcard') return
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (e.code === 'Space') { e.preventDefault(); setIsFlipped(f => !f) }
+      if (isFlipped) {
+        if (e.key === '1') rateFlashcard('hard')
+        if (e.key === '2') rateFlashcard('good')
+        if (e.key === '3') rateFlashcard('easy')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inSession, studyMode, isFlipped, currentIndex, studyQueue])
+
+  const changePage = (p: Page) => {
+    setPage(p)
+    setStudyQueue([])
+  }
+
+  /* ───────────────────────────── Render: loading ───────────────────────────── */
+
+  const shell = 'min-h-screen bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100'
+
+  if (!authReady) {
     return (
-      <div className={`min-h-screen flex transition-colors ${darkMode ? 'bg-slate-950 text-white' : 'bg-white text-slate-900'}`}>
-        {/* CỘT TRÁI: BRAND SHOWCASE (Ẩn trên điện thoại, hiện đẹp trên máy tính) */}
-        <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-slate-900 text-white p-12 flex-col justify-between">
-          {/* Hiệu ứng ánh sáng nền thương mại */}
-          <div className="absolute -top-24 -left-24 w-96 h-96 bg-blue-600/30 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-600/25 rounded-full blur-3xl pointer-events-none" />
+      <div className={`${shell} flex items-center justify-center`}>
+        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+      </div>
+    )
+  }
 
-          {/* Header Logo */}
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-tr from-blue-500 to-indigo-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30">
-              <BookOpen className="w-5 h-5 text-white" />
+  /* ───────────────────────────── Render: auth ───────────────────────────── */
+
+  if (!user) {
+    return (
+      <div className={`${shell} flex`}>
+        <Toaster position="top-center" richColors theme={darkMode ? 'dark' : 'light'} />
+
+        <div className="relative hidden flex-col justify-between overflow-hidden bg-slate-950 p-12 text-white lg:flex lg:w-1/2">
+          <div className="pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-indigo-600/25 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 right-0 h-96 w-96 rounded-full bg-sky-600/15 blur-3xl" />
+
+          <div className="relative z-10 flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600">
+              <BookOpen className="h-4 w-4" />
             </div>
-            <div>
-              <span className="font-bold text-xl tracking-tight">VocabDaily</span>
-              <span className="ml-2 text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30">
-                Enterprise
-              </span>
-            </div>
+            <span className="text-lg font-semibold tracking-tight">VocabDaily</span>
           </div>
 
-          {/* Nội dung giá trị cốt lõi */}
-          <div className="relative z-10 max-w-lg space-y-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-xs text-blue-200">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              Hệ thống ghi nhớ từ vựng chuẩn Spaced Repetition
-            </div>
-            <h2 className="text-4xl font-bold leading-tight tracking-tight">
-              Làm chủ từ vựng tiếng Anh theo phương pháp khoa học.
+          <div className="relative z-10 max-w-lg">
+            <h2 className="text-4xl font-semibold leading-tight tracking-tight">
+              Ghi nhớ từ vựng tiếng Anh theo phương pháp lặp lại ngắt quãng.
             </h2>
-            <p className="text-slate-300 text-base leading-relaxed">
-              Tích hợp phân tích ngữ cảnh thông minh, luyện phát âm chuẩn bản xứ và hệ thống theo dõi tiến độ trực quan dành cho học viên và giảng viên.
+            <p className="mt-4 text-base leading-relaxed text-slate-400">
+              Tự động phân tích nghĩa và cụm từ đi kèm, luyện phát âm, và theo dõi tiến độ học tập mỗi ngày.
             </p>
-
-            {/* 3 Thẻ chỉ số tính năng */}
-            <div className="grid grid-cols-3 gap-4 pt-4">
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
-                <div className="text-2xl font-bold text-white">5+</div>
-                <div className="text-xs text-slate-400 mt-1">Chế độ luyện tập chuyên sâu</div>
-              </div>
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
-                <div className="text-2xl font-bold text-blue-400">AI</div>
-                <div className="text-xs text-slate-400 mt-1">Phân tích ngữ cảnh & Collocation</div>
-              </div>
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
-                <div className="text-2xl font-bold text-emerald-400">SRS</div>
-                <div className="text-xs text-slate-400 mt-1">Lặp lại ngắt quãng thông minh</div>
-              </div>
+            <div className="mt-10 grid grid-cols-3 gap-3">
+              {[
+                { v: '5', l: 'Chế độ luyện tập' },
+                { v: 'SRS', l: 'Lịch ôn thông minh' },
+                { v: 'AI', l: 'Phân tích ngữ cảnh' },
+              ].map(s => (
+                <div key={s.l} className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xl font-semibold">{s.v}</div>
+                  <div className="mt-1 text-xs text-slate-400">{s.l}</div>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Footer Testimonial */}
-          <div className="relative z-10 pt-6 border-t border-white/10 flex items-center justify-between text-xs text-slate-400">
-            <span>© 2026 VocabDaily Learning Platform</span>
-            <span>Bảo mật dữ liệu chuẩn Cloud RLS</span>
-          </div>
+          <p className="relative z-10 text-xs text-slate-500">© {new Date().getFullYear()} VocabDaily</p>
         </div>
 
-        {/* CỘT PHẢI: FORM ĐĂNG NHẬP / ĐĂNG KÝ */}
-        <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-6 sm:p-12 relative">
+        <div className="relative flex w-full flex-col items-center justify-center p-6 sm:p-12 lg:w-1/2">
           <button
             onClick={toggleDarkMode}
-            className={`absolute top-6 right-6 p-2.5 rounded-xl border transition ${
-              darkMode ? 'border-slate-800 bg-slate-900 text-slate-300 hover:text-white' : 'border-slate-200 bg-slate-50 text-slate-600 hover:text-slate-900'
-            }`}
-            title="Chuyển giao diện Sáng/Tối"
+            aria-label="Đổi giao diện sáng/tối"
+            className="absolute right-6 top-6 rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 dark:border-slate-800 dark:hover:bg-slate-900"
           >
-            {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
 
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-md space-y-8"
-          >
-            {/* Logo mobile */}
-            <div className="lg:hidden flex items-center gap-2.5">
-              <div className="w-9 h-9 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center text-white">
-                <BookOpen className="w-5 h-5" />
-              </div>
-              <span className="font-bold text-xl">VocabDaily Pro</span>
-            </div>
+          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-sm">
+            <div className="mb-8 lg:hidden"><Logo /></div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {isSignUp ? 'Tạo tài khoản' : 'Đăng nhập'}
+            </h1>
+            <p className={`mt-2 text-sm ${ui.muted}`}>
+              {isSignUp ? 'Bắt đầu xây dựng sổ từ vựng của riêng bạn.' : 'Tiếp tục lộ trình ôn tập của bạn.'}
+            </p>
 
-            <div>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-                {isSignUp ? 'Tạo tài khoản học viên' : 'Chào mừng trở lại'}
-              </h1>
-              <p className="text-slate-500 dark:text-slate-400 text-sm mt-2">
-                {isSignUp
-                  ? 'Khởi tạo không gian học từ vựng cá nhân hóa miễn phí.'
-                  : 'Đăng nhập để tiếp tục lộ trình ôn tập hôm nay của bạn.'}
-              </p>
-            </div>
-
-            <form onSubmit={handleAuth} className="space-y-5">
-              {/* Ô 1: Tên đăng nhập / Biệt danh / ID */}
+            <form onSubmit={handleAuth} className="mt-8 space-y-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Tên đăng nhập / Biệt danh / ID
-                </label>
+                <label htmlFor="username" className={ui.label}>Tên đăng nhập</label>
                 <input
+                  id="username"
                   type="text"
                   required
                   minLength={3}
                   autoComplete="username"
-                  placeholder="VD: minhanh01 hoặc bietdanh"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
+                  placeholder="VD: minhanh01"
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  className={ui.field}
                 />
               </div>
-
-              {/* Ô 2: Mật khẩu (bị thiếu ở bản trước) */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Mật khẩu
-                </label>
+                <label htmlFor="password" className={ui.label}>Mật khẩu</label>
                 <input
+                  id="password"
                   type="password"
                   required
                   minLength={6}
-                  autoComplete="current-password"
+                  autoComplete={isSignUp ? 'new-password' : 'current-password'}
                   placeholder="Tối thiểu 6 ký tự"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
+                  className={ui.field}
                 />
               </div>
-
-              <button
-                disabled={authLoading}
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-3.5 rounded-xl shadow-lg shadow-blue-600/20 transition-all active:scale-[0.99]"
-              >
-                {authLoading
-                  ? 'Đang xác thực...'
-                  : isSignUp
-                  ? 'Tạo tài khoản & Bắt đầu học'
-                  : 'Đăng nhập vào hệ thống'}
-              </button>
+              <Button type="submit" loading={authLoading} className="w-full py-2.5">
+                {isSignUp ? 'Tạo tài khoản' : 'Đăng nhập'}
+              </Button>
             </form>
 
-            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 text-center text-sm text-slate-500">
-              {isSignUp ? 'Đã có tài khoản trên hệ thống? ' : 'Chưa có tài khoản học tập? '}
+            <p className={`mt-6 text-center text-sm ${ui.muted}`}>
+              {isSignUp ? 'Đã có tài khoản? ' : 'Chưa có tài khoản? '}
               <button
                 type="button"
                 onClick={() => setIsSignUp(!isSignUp)}
-                className="text-blue-600 dark:text-blue-400 font-semibold hover:underline"
+                className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
               >
-                {isSignUp ? 'Đăng nhập ngay' : 'Đăng ký miễn phí'}
+                {isSignUp ? 'Đăng nhập' : 'Đăng ký'}
               </button>
-            </div>
+            </p>
           </motion.div>
         </div>
       </div>
     )
   }
 
-  const leechWords = vocabs.filter(v => (v.wrong_count || 0) > 0).sort((a, b) => (b.wrong_count || 0) - (a.wrong_count || 0)).slice(0, 10)
-  const dueSrsCount = vocabs.filter(v => !v.next_review_at || new Date(v.next_review_at) <= new Date()).length
-  const masteredCount = vocabs.filter(v => (v.interval_days || 0) >= 4).length
+  /* ───────────────────────────── Render: app ───────────────────────────── */
 
-  const groupedByDate = vocabs.reduce((acc: Record<string, Vocab[]>, item) => {
-    const dateKey = new Date(item.created_at).toLocaleDateString('vi-VN', {
-      weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit'
-    })
-    if (!acc[dateKey]) acc[dateKey] = []
-    acc[dateKey].push(item)
-    return acc
-  }, {})
+  const navItems: { id: Page; label: string; icon: typeof BookOpen; badge?: number }[] = [
+    { id: 'words', label: 'Sổ từ vựng', icon: BookOpen },
+    { id: 'study', label: 'Luyện tập', icon: Layers, badge: dueCount },
+    { id: 'progress', label: 'Tiến độ', icon: BarChart3 },
+    ...(isTeacher ? [{ id: 'class' as Page, label: 'Quản lý lớp', icon: Users }] : []),
+  ]
+
+  const current = studyQueue[currentIndex]
+  const maxBar = Math.max(1, ...last7Days.map(d => d.count))
 
   return (
-    <div className={`min-h-screen transition-colors duration-300 ${bgMain}`}>
-      {/* Header kèm Daily Streak */}
-      <header className={`backdrop-blur-md border-b sticky top-0 z-20 ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200/80'}`}>
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 font-bold text-xl bg-gradient-to-r from-blue-500 to-indigo-500 bg-clip-text text-transparent">
-            <div className="p-1.5 bg-blue-600 rounded-xl text-white">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <span>VocabDaily</span>
+    <div className={shell}>
+      <Toaster position="top-center" richColors theme={darkMode ? 'dark' : 'light'} />
+
+      {/* Sidebar (desktop) */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:flex">
+        <div className="flex h-16 items-center px-6"><Logo /></div>
+
+        <nav className="flex-1 space-y-1 px-3 py-2">
+          {navItems.map(item => {
+            const Icon = item.icon
+            const active = page === item.id
+            return (
+              <button
+                key={item.id}
+                onClick={() => changePage(item.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
+                  active
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300'
+                    : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="flex-1 text-left">{item.label}</span>
+                {!!item.badge && (
+                  <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </nav>
+
+        <div className="space-y-3 border-t border-slate-200 p-4 dark:border-slate-800">
+          <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+            <Flame className="h-4 w-4" />
+            {streak} ngày liên tiếp
           </div>
-
-          <div className="flex items-center gap-3">
-            {/* Ngọn lửa Daily Streak */}
-            <div className="flex items-center gap-1.5 bg-orange-500/15 text-orange-500 px-3 py-1.5 rounded-full text-xs font-bold" title="Chuỗi ngày học liên tiếp">
-              <Flame className="w-4 h-4 fill-orange-500" />
-              <span>{streak} ngày</span>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold uppercase text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+              {displayName(user.email).slice(0, 2)}
             </div>
-
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{displayName(user.email)}</p>
+              <p className={`text-xs ${ui.muted}`}>{isTeacher ? 'Giáo viên' : 'Học viên'}</p>
+            </div>
             <button
               onClick={toggleDarkMode}
-              className={`p-2 rounded-xl border transition ${darkMode ? 'bg-slate-800 border-slate-700 text-amber-400' : 'bg-slate-100 border-slate-200 text-slate-600'}`}
+              aria-label="Đổi giao diện sáng/tối"
+              className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 dark:hover:bg-slate-800"
             >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
-
             <button
               onClick={() => supabase.auth.signOut()}
-              className="text-sm text-slate-400 hover:text-red-500 flex items-center gap-1 transition"
+              aria-label="Đăng xuất"
+              className="rounded-lg p-2 text-slate-500 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10"
             >
-              <LogOut className="w-4 h-4" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
+        </div>
+      </aside>
+
+      {/* Top bar (mobile) */}
+      <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 lg:hidden">
+        <Logo small />
+        <div className="flex items-center gap-1">
+          <span className="mr-1 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+            <Flame className="h-3.5 w-3.5" /> {streak}
+          </span>
+          <button onClick={toggleDarkMode} aria-label="Đổi giao diện" className="rounded-lg p-2 text-slate-500">
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+          <button onClick={() => supabase.auth.signOut()} aria-label="Đăng xuất" className="rounded-lg p-2 text-slate-500">
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </header>
 
-      {isTeacher && (
-        <div className="max-w-5xl mx-auto px-4 pt-6">
-          <div className={`p-6 rounded-3xl border-2 border-indigo-500/40 shadow-sm ${darkMode ? 'bg-indigo-950/30' : 'bg-indigo-50/70'}`}>
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-              <div>
-                <span className="text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-indigo-600 text-white">
-                  Chế độ Giáo viên theo dõi
-                </span>
-                <h2 className="text-lg font-bold mt-2">Báo cáo tiến độ học tập của học sinh</h2>
-              </div>
-              <button
-                onClick={() => fetchVocabs(user.id, user.email)}
-                className="text-xs font-semibold bg-indigo-600 text-white px-3.5 py-2 rounded-xl hover:bg-indigo-700 transition"
-              >
-                Làm mới dữ liệu
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-              <div className={`p-4 rounded-2xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400">Tổng từ đã lưu</p>
-                <p className="text-2xl font-extrabold text-blue-500">{vocabs.length}</p>
-              </div>
-              <div className={`p-4 rounded-2xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400">Đã thuộc lòng</p>
-                <p className="text-2xl font-extrabold text-emerald-500">
-                  {vocabs.filter(v => (v.interval_days || 0) >= 4).length}
-                </p>
-              </div>
-              <div className={`p-4 rounded-2xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400">Tổng lượt đã ôn</p>
-                <p className="text-2xl font-extrabold text-indigo-500">
-                  {vocabs.reduce((sum, v) => sum + (v.review_count || 0), 0)}
-                </p>
-              </div>
-              <div className={`p-4 rounded-2xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400">Từ cần lưu ý (hay sai)</p>
-                <p className="text-2xl font-extrabold text-red-500">
-                  {vocabs.filter(v => (v.wrong_count || 0) > 0).length}
-                </p>
-              </div>
-            </div>
-
-            {vocabs.filter(v => (v.wrong_count || 0) > 0).length > 0 && (
-              <div className={`p-4 rounded-2xl border ${cardBg}`}>
-                <p className="text-xs font-bold text-red-500 uppercase mb-2">Các từ học sinh hay làm sai:</p>
-                <div className="flex flex-wrap gap-2">
-                  {vocabs
-                    .filter(v => (v.wrong_count || 0) > 0)
-                    .sort((a, b) => (b.wrong_count || 0) - (a.wrong_count || 0))
-                    .map(v => (
-                      <span key={v.id} className="text-xs px-3 py-1.5 rounded-xl bg-red-500/10 text-red-500 font-medium">
-                        <strong>{v.word}</strong> ({v.meaning}) — sai {v.wrong_count} lần
-                      </span>
-                    ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        {/* 3 Tab chính */}
-        <div className={`flex flex-wrap gap-2 mb-8 p-1.5 rounded-2xl w-fit ${darkMode ? 'bg-slate-900 border border-slate-800' : 'bg-slate-200/70'}`}>
-          {[
-            { id: 'add', label: `+ Sổ từ vựng (${vocabs.length})` },
-            { id: 'study', label: `⚡ Luyện tập (${dueSrsCount} cần ôn)` },
-            { id: 'dashboard', label: '📊 Tiến độ & Hội thoại' },
-          ].map((tab) => (
+      {/* Bottom nav (mobile) */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid border-t border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 lg:hidden"
+        style={{ gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))` }}>
+        {navItems.map(item => {
+          const Icon = item.icon
+          const active = page === item.id
+          return (
             <button
-              key={tab.id}
-              onClick={() => { setActiveTab(tab.id as any); setStudyQueue([]) }}
-              className={`px-5 py-2.5 rounded-xl font-semibold text-sm transition ${
-                activeTab === tab.id
-                  ? (darkMode ? 'bg-blue-600 text-white shadow' : 'bg-white text-blue-600 shadow-sm')
-                  : 'text-slate-500 hover:text-slate-400'
+              key={item.id}
+              onClick={() => changePage(item.id)}
+              className={`relative flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium ${
+                active ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'
               }`}
             >
-              {tab.label}
+              <Icon className="h-5 w-5" />
+              {item.label}
+              {!!item.badge && (
+                <span className="absolute right-1/4 top-1.5 rounded-full bg-indigo-600 px-1.5 text-[10px] font-semibold text-white">
+                  {item.badge}
+                </span>
+              )}
             </button>
-          ))}
-        </div>
+          )
+        })}
+      </nav>
 
-        {/* TAB 1: NHẬP TỪ VỰNG & COLLOCATIONS */}
-        {activeTab === 'add' && (
-          <div className="space-y-8">
-            <div className={`p-6 rounded-3xl shadow-sm border ${cardBg}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <div>
-                  <h2 className="font-bold text-lg">Thêm từ vựng mới (Tự phân tích ngữ cảnh)</h2>
-                  <p className="text-xs text-slate-400">Hệ thống tự động tìm nghĩa, từ loại, cụm từ đi kèm (Collocations) và câu ví dụ</p>
-                </div>
-                <button
-                  onClick={handleAnalyzeWords}
-                  disabled={isAnalyzing}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 shadow-md"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  {isAnalyzing ? 'Đang phân tích...' : 'Phân tích tự động'}
-                </button>
-              </div>
+      {/* Main */}
+      <main className="px-4 pb-28 pt-6 sm:px-8 lg:ml-64 lg:pb-12 lg:pt-10">
+        <div className="mx-auto max-w-4xl">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={page}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+            >
+              {/* ═════════════ PAGE: WORDS ═════════════ */}
+              {page === 'words' && (
+                <div className="space-y-8">
+                  <PageHeader
+                    title="Sổ từ vựng"
+                    description={`${vocabs.length} từ trong sổ của bạn`}
+                  />
 
-              <textarea
-                rows={4}
-                placeholder={"Nhập mỗi từ tiếng Anh một dòng...\nVí dụ:\nambitious\nbreakthrough\nnegotiate"}
-                value={wordsInput}
-                onChange={e => setWordsInput(e.target.value)}
-                className={`w-full p-4 border rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm ${inputBg}`}
-              />
+                  <Card className="p-5 sm:p-6">
+                    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-sm font-semibold">Thêm từ mới</h2>
+                        <p className={`mt-1 text-sm ${ui.muted}`}>
+                          Nhập mỗi từ một dòng, hệ thống sẽ gợi ý nghĩa, từ loại, collocation và câu ví dụ.
+                        </p>
+                      </div>
+                      <Button onClick={handleAnalyzeWords} loading={isAnalyzing} icon={Sparkles}>
+                        {isAnalyzing ? 'Đang phân tích' : 'Phân tích tự động'}
+                      </Button>
+                    </div>
 
-              {draftItems.length > 0 && (
-                <div className="mt-6 space-y-3">
-                  {draftItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-4 rounded-2xl border space-y-2 ${darkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
-                    >
-                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
-                        <div className="md:col-span-3 flex items-center gap-2">
-                          <button onClick={() => speakText(item.word)} className="p-1.5 text-blue-500 rounded-lg">
-                            <Volume2 className="w-4 h-4" />
+                    <textarea
+                      rows={4}
+                      placeholder={'ambitious\nbreakthrough\nnegotiate'}
+                      value={wordsInput}
+                      onChange={e => setWordsInput(e.target.value)}
+                      className={`${ui.field} font-mono`}
+                    />
+
+                    {draftItems.length > 0 && (
+                      <div className="mt-6 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <p className={ui.label}>Kiểm tra và chỉnh sửa trước khi lưu</p>
+                          <button
+                            onClick={() => setDraftItems([])}
+                            className="text-xs font-medium text-slate-500 hover:text-red-600"
+                          >
+                            Xoá bản nháp
                           </button>
-                          <span className="font-bold">{item.word}</span>
                         </div>
-                        <div className="md:col-span-2">
-                          <input
-                            value={item.pos}
-                            onChange={e => updateDraftItem(idx, 'pos', e.target.value)}
-                            placeholder="Từ loại..."
-                            className={`w-full px-2.5 py-1.5 text-xs italic rounded-lg border ${inputBg}`}
-                          />
+                        {draftItems.map((item, idx) => (
+                          <div key={idx} className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                            <div className="grid grid-cols-1 items-center gap-2 md:grid-cols-12">
+                              <div className="flex items-center gap-1 md:col-span-3">
+                                <button
+                                  onClick={() => speakText(item.word)}
+                                  aria-label={`Nghe phát âm ${item.word}`}
+                                  className="rounded-md p-1.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
+                                >
+                                  <Volume2 className="h-4 w-4" />
+                                </button>
+                                <span className="text-sm font-semibold">{item.word}</span>
+                              </div>
+                              <input className={`${ui.field} md:col-span-2`} placeholder="Từ loại" value={item.pos} onChange={e => updateDraft(idx, 'pos', e.target.value)} />
+                              <input className={`${ui.field} md:col-span-3`} placeholder="Nghĩa tiếng Việt" value={item.meaning} onChange={e => updateDraft(idx, 'meaning', e.target.value)} />
+                              <input className={`${ui.field} md:col-span-4`} placeholder="Collocations" value={item.collocations} onChange={e => updateDraft(idx, 'collocations', e.target.value)} />
+                            </div>
+                            <input className={ui.field} placeholder="Câu ví dụ" value={item.example} onChange={e => updateDraft(idx, 'example', e.target.value)} />
+                          </div>
+                        ))}
+                        <Button onClick={handleSaveVocabs} loading={isSaving} icon={Plus} className="w-full py-2.5">
+                          Lưu {draftItems.length} từ vào sổ
+                        </Button>
+                      </div>
+                    )}
+                  </Card>
+
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h2 className="text-sm font-semibold">Lịch sử theo ngày</h2>
+                      <div className="relative w-full sm:w-64">
+                        <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                        <input
+                          value={search}
+                          onChange={e => setSearch(e.target.value)}
+                          placeholder="Tìm từ hoặc nghĩa"
+                          className={`${ui.field} pl-9`}
+                        />
+                      </div>
+                    </div>
+
+                    {loadingData ? (
+                      <Card className="space-y-4 p-5">
+                        {[0, 1, 2].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+                      </Card>
+                    ) : vocabs.length === 0 ? (
+                      <Card>
+                        <EmptyState
+                          icon={BookOpen}
+                          title="Chưa có từ vựng nào"
+                          description="Nhập vài từ tiếng Anh ở phía trên và bấm “Phân tích tự động” để bắt đầu."
+                        />
+                      </Card>
+                    ) : searchedVocabs.length === 0 ? (
+                      <Card><EmptyState icon={Search} title="Không tìm thấy kết quả" description={`Không có từ nào khớp với “${search}”.`} /></Card>
+                    ) : (
+                      Object.entries(groupedByDate).map(([date, items]) => (
+                        <Card key={date} className="overflow-hidden">
+                          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-2.5 dark:border-slate-800 dark:bg-slate-900">
+                            <span className="text-sm font-medium capitalize">{date}</span>
+                            <Badge tone="indigo">{items.length} từ</Badge>
+                          </div>
+                          <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {items.map(item => (
+                              <li key={item.id} className="group flex items-start justify-between gap-4 px-5 py-3.5">
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                      onClick={() => speakText(item.word)}
+                                      aria-label={`Nghe phát âm ${item.word}`}
+                                      className="rounded-md p-1 text-slate-400 hover:text-indigo-600"
+                                    >
+                                      <Volume2 className="h-4 w-4" />
+                                    </button>
+                                    <span className="text-sm font-semibold">{item.word}</span>
+                                    {item.part_of_speech && <Badge>{item.part_of_speech}</Badge>}
+                                    <span className="text-sm text-slate-600 dark:text-slate-300">{item.meaning}</span>
+                                    {(item.wrong_count || 0) > 0 && <Badge tone="red">Sai {item.wrong_count}</Badge>}
+                                    {isMastered(item) && <Badge tone="emerald">Đã thuộc</Badge>}
+                                  </div>
+                                  {item.collocations && <p className="pl-8 text-xs text-emerald-600 dark:text-emerald-400">{item.collocations}</p>}
+                                  {item.example && <p className={`pl-8 text-xs italic ${ui.muted}`}>“{item.example}”</p>}
+                                </div>
+                                <button
+                                  onClick={() => setDeleteTarget(item)}
+                                  aria-label={`Xoá ${item.word}`}
+                                  className="rounded-md p-1.5 text-slate-400 opacity-100 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </Card>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ═════════════ PAGE: STUDY ═════════════ */}
+              {page === 'study' && (
+                <div>
+                  <PageHeader
+                    title="Luyện tập"
+                    description={dueCount > 0 ? `${dueCount} từ đang đến hạn ôn tập` : 'Bạn đã ôn hết các từ đến hạn'}
+                  />
+
+                  {studyQueue.length === 0 ? (
+                    <div className="space-y-6">
+                      <div>
+                        <p className={`${ui.label} mb-3`}>Chế độ luyện tập</p>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {STUDY_MODES.map(m => {
+                            const Icon = m.icon
+                            const active = studyMode === m.id
+                            return (
+                              <button
+                                key={m.id}
+                                onClick={() => setStudyMode(m.id)}
+                                className={`flex items-start gap-3 rounded-xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
+                                  active
+                                    ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
+                                    : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                <div className={`rounded-lg p-2 ${active ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}>
+                                  <Icon className="h-4 w-4" />
+                                </div>
+                                <div>
+                                  <p className="text-sm font-semibold">{m.label}</p>
+                                  <p className={`mt-0.5 text-xs ${ui.muted}`}>{m.desc}</p>
+                                </div>
+                              </button>
+                            )
+                          })}
                         </div>
-                        <div className="md:col-span-3">
-                          <input
-                            value={item.meaning}
-                            onChange={e => updateDraftItem(idx, 'meaning', e.target.value)}
-                            placeholder="Nghĩa tiếng Việt..."
-                            className={`w-full px-2.5 py-1.5 text-sm font-medium rounded-lg border ${inputBg}`}
-                          />
+                      </div>
+
+                      <div>
+                        <p className={`${ui.label} mb-3`}>Nguồn từ vựng</p>
+                        <Segmented value={timeFilter} onChange={setTimeFilter} options={TIME_FILTERS} />
+                      </div>
+
+                      <Card className="flex flex-wrap items-center justify-between gap-4 p-5">
+                        <div>
+                          <p className="text-2xl font-semibold tracking-tight">{filteredStudy.length}</p>
+                          <p className={`text-sm ${ui.muted}`}>từ sẵn sàng cho phiên học này</p>
                         </div>
-                        <div className="md:col-span-4">
-                          <input
-                            value={item.collocations}
-                            onChange={e => updateDraftItem(idx, 'collocations', e.target.value)}
-                            placeholder="Collocations / Từ liên quan..."
-                            className={`w-full px-2.5 py-1.5 text-xs rounded-lg border ${inputBg}`}
+                        <Button onClick={() => startStudySession()} icon={Shuffle} disabled={filteredStudy.length === 0}>
+                          Bắt đầu phiên học
+                        </Button>
+                      </Card>
+                    </div>
+                  ) : currentIndex < studyQueue.length ? (
+                    <div className="mx-auto max-w-xl">
+                      <div className="mb-6">
+                        <div className="mb-2 flex items-center justify-between text-xs font-medium text-slate-500">
+                          <span>{currentIndex + 1} / {studyQueue.length}</span>
+                          <div className="flex items-center gap-3">
+                            {studyMode !== 'flashcard' && <span className="text-emerald-600 dark:text-emerald-400">Điểm {score}</span>}
+                            <button onClick={() => setStudyQueue([])} className="inline-flex items-center gap-1 hover:text-slate-800 dark:hover:text-slate-200">
+                              <X className="h-3.5 w-3.5" /> Kết thúc
+                            </button>
+                          </div>
+                        </div>
+                        <div className="h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                          <div
+                            className="h-full rounded-full bg-indigo-600 transition-all"
+                            style={{ width: `${((currentIndex + 1) / studyQueue.length) * 100}%` }}
                           />
                         </div>
                       </div>
-                      <input
-                        value={item.example}
-                        onChange={e => updateDraftItem(idx, 'example', e.target.value)}
-                        placeholder="Câu ví dụ hội thoại..."
-                        className={`w-full px-3 py-1.5 text-xs italic rounded-lg border ${inputBg}`}
-                      />
-                    </div>
-                  ))}
 
-                  <button
-                    onClick={handleSaveVocabs}
-                    disabled={isSaving}
-                    className="mt-4 w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold py-3.5 rounded-2xl shadow-lg flex items-center justify-center gap-2"
-                  >
-                    <Plus className="w-5 h-5" />
-                    {isSaving ? 'Đang lưu...' : `Lưu ${draftItems.length} từ vào sổ từ vựng`}
-                  </button>
-                </div>
-              )}
-            </div>
+                      {/* Flashcard */}
+                      {studyMode === 'flashcard' && (
+                        <>
+                          <div className="relative h-72 w-full [perspective:1200px]">
+                            <motion.div
+                              onClick={() => setIsFlipped(f => !f)}
+                              animate={{ rotateY: isFlipped ? 180 : 0 }}
+                              transition={{ duration: 0.4 }}
+                              style={{ transformStyle: 'preserve-3d' }}
+                              className="relative h-full w-full cursor-pointer"
+                            >
+                              <div
+                                style={{ backfaceVisibility: 'hidden' }}
+                                className={`${ui.card} absolute inset-0 flex flex-col items-center justify-center p-8 shadow-sm`}
+                              >
+                                <button
+                                  onClick={e => speakText(current.word, e)}
+                                  aria-label="Nghe phát âm"
+                                  className="absolute right-4 top-4 rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-800"
+                                >
+                                  <Volume2 className="h-5 w-5" />
+                                </button>
+                                {current.part_of_speech && <Badge tone="indigo">{current.part_of_speech}</Badge>}
+                                <p className="mt-3 text-center text-4xl font-semibold tracking-tight">{current.word}</p>
+                                <p className={`mt-8 text-xs ${ui.muted}`}>Nhấn Space hoặc chạm để lật thẻ</p>
+                              </div>
 
-            {/* Lịch sử từ vựng */}
-            <div className="space-y-5">
-              <h3 className="font-bold text-lg flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-blue-500" /> Sổ tay từ vựng theo ngày
-              </h3>
-              {Object.entries(groupedByDate).map(([date, items]) => (
-                <div key={date} className={`rounded-3xl border shadow-sm overflow-hidden ${cardBg}`}>
-                  <div className={`px-6 py-3 border-b flex justify-between items-center ${darkMode ? 'bg-slate-800/50 border-slate-800' : 'bg-slate-50 border-slate-100'}`}>
-                    <span className="font-semibold text-sm capitalize">{date}</span>
-                    <span className="text-xs bg-blue-500/15 text-blue-500 px-3 py-1 rounded-full font-bold">{items.length} từ</span>
-                  </div>
-                  <div className={`divide-y ${darkMode ? 'divide-slate-800' : 'divide-slate-100'}`}>
-                    {items.map(item => (
-                      <div key={item.id} className="px-6 py-4 flex items-start justify-between gap-4 group">
-                        <div className="space-y-1 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button onClick={() => speakText(item.word)} className="p-1 text-slate-400 hover:text-blue-500">
-                              <Volume2 className="w-4 h-4" />
-                            </button>
-                            <span className="font-bold text-base">{item.word}</span>
-                            {item.part_of_speech && (
-                              <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-400 italic">
-                                {item.part_of_speech}
-                              </span>
-                            )}
-                            <span className="text-slate-400">—</span>
-                            <span className="font-medium text-blue-500">{item.meaning}</span>
+                              <div
+                                style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                className="absolute inset-0 flex flex-col items-center justify-center space-y-3 rounded-xl bg-indigo-600 p-6 text-center text-white shadow-sm"
+                              >
+                                <p className="text-3xl font-semibold tracking-tight">{current.meaning}</p>
+                                {current.collocations && <p className="text-xs text-indigo-200">{current.collocations}</p>}
+                                {current.example && (
+                                  <p className="rounded-lg bg-white/10 px-3 py-2 text-xs italic text-indigo-50">“{current.example}”</p>
+                                )}
+                              </div>
+                            </motion.div>
                           </div>
-                          {item.collocations && (
-                            <p className="pl-7 text-xs text-emerald-500 font-medium">{item.collocations}</p>
+
+                          <div className="mt-6">
+                            {isFlipped ? (
+                              <div className="grid grid-cols-3 gap-2">
+                                <button onClick={() => rateFlashcard('hard')} className="rounded-lg border border-red-200 bg-red-50 py-3 text-sm font-medium text-red-700 transition hover:bg-red-100 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+                                  Chưa nhớ<span className="block text-[11px] font-normal opacity-70">10 phút · phím 1</span>
+                                </button>
+                                <button onClick={() => rateFlashcard('good')} className="rounded-lg border border-amber-200 bg-amber-50 py-3 text-sm font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                                  Tạm nhớ<span className="block text-[11px] font-normal opacity-70">1 ngày · phím 2</span>
+                                </button>
+                                <button onClick={() => rateFlashcard('easy')} className="rounded-lg border border-emerald-200 bg-emerald-50 py-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
+                                  Đã thuộc<span className="block text-[11px] font-normal opacity-70">5 ngày · phím 3</span>
+                                </button>
+                              </div>
+                            ) : (
+                              <Button variant="secondary" onClick={() => setIsFlipped(true)} icon={Eye} className="w-full py-3">
+                                Hiện đáp án
+                              </Button>
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Quiz */}
+                      {studyMode === 'quiz' && (
+                        <div className="space-y-4">
+                          <Card className="relative p-8 text-center">
+                            <button
+                              onClick={() => speakText(current.word)}
+                              aria-label="Nghe phát âm"
+                              className="absolute right-4 top-4 rounded-lg p-2 text-slate-400 hover:text-indigo-600"
+                            >
+                              <Volume2 className="h-5 w-5" />
+                            </button>
+                            <p className={`mb-2 text-xs ${ui.muted}`}>Chọn nghĩa đúng của từ</p>
+                            <h3 className="text-3xl font-semibold tracking-tight">{current.word}</h3>
+                          </Card>
+                          <div className="grid gap-2.5">
+                            {quizOptions.map((opt, idx) => {
+                              const correct = opt === current.meaning
+                              const picked = selectedOption === opt
+                              let style = 'border-slate-200 bg-white hover:border-indigo-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-indigo-500/50'
+                              if (selectedOption) {
+                                if (correct) style = 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                else if (picked) style = 'border-red-500 bg-red-50 text-red-800 dark:bg-red-500/10 dark:text-red-300'
+                                else style = 'border-slate-200 bg-white opacity-60 dark:border-slate-800 dark:bg-slate-900'
+                              }
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => handleSelectQuiz(opt)}
+                                  disabled={!!selectedOption}
+                                  className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-medium transition ${style}`}
+                                >
+                                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                    {['A', 'B', 'C', 'D'][idx]}
+                                  </span>
+                                  {opt}
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {selectedOption && (
+                            <Button onClick={advance} className="w-full py-2.5">
+                              Câu tiếp theo <ArrowRight className="h-4 w-4" />
+                            </Button>
                           )}
-                          {item.example && (
-                            <div className="pl-7 flex items-center gap-2 text-xs text-slate-400">
-                              <button onClick={() => speakText(item.example!)} className="hover:text-blue-500">
-                                <Volume2 className="w-3.5 h-3.5" />
-                              </button>
-                              <span className="italic">"{item.example}"</span>
+                        </div>
+                      )}
+
+                      {/* Spelling & Dictation */}
+                      {(studyMode === 'spelling' || studyMode === 'dictation') && (
+                        <div className="space-y-5">
+                          <Card className="p-8 text-center">
+                            <Button variant="secondary" icon={Volume2} onClick={() => speakText(current.word)} className="mx-auto">
+                              Nghe phát âm
+                            </Button>
+                            {studyMode === 'spelling' ? (
+                              <p className="mt-5 text-2xl font-semibold tracking-tight text-indigo-600 dark:text-indigo-300">{current.meaning}</p>
+                            ) : (
+                              <p className={`mt-5 text-sm ${ui.muted}`}>Nghe âm thanh và gõ chính xác từ tiếng Anh.</p>
+                            )}
+                          </Card>
+
+                          <form onSubmit={handleCheckText} className="space-y-3">
+                            <input
+                              type="text"
+                              autoFocus
+                              autoComplete="off"
+                              spellCheck={false}
+                              disabled={answered}
+                              placeholder="Gõ từ tiếng Anh"
+                              value={textInput}
+                              onChange={e => {
+                                setTextInput(e.target.value)
+                                if (answerStatus === 'wrong') setAnswerStatus('idle')
+                              }}
+                              className={`w-full rounded-xl border-2 px-4 py-3.5 text-center text-xl font-semibold focus:outline-none ${
+                                answerStatus === 'correct'
+                                  ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                  : answerStatus === 'wrong'
+                                  ? 'border-red-500 bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
+                                  : answerStatus === 'revealed'
+                                  ? 'border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
+                                  : 'border-slate-300 bg-white focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-900'
+                              }`}
+                            />
+                            {answerStatus === 'wrong' && (
+                              <p className="text-center text-sm text-red-600 dark:text-red-400">
+                                Chưa đúng. Gợi ý: từ bắt đầu bằng “{current.word[0]}”
+                              </p>
+                            )}
+                            {answered ? (
+                              <div className="space-y-3 text-center">
+                                <p className={`text-sm ${ui.muted}`}>Nghĩa: <span className="font-medium text-slate-900 dark:text-slate-100">{current.meaning}</span></p>
+                                <Button type="button" onClick={advance} className="w-full py-2.5">
+                                  Từ tiếp theo <ArrowRight className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button type="button" variant="secondary" onClick={revealAnswer}>Hiện đáp án</Button>
+                                <Button type="submit" className="flex-1">Kiểm tra</Button>
+                              </div>
+                            )}
+                          </form>
+                        </div>
+                      )}
+
+                      {/* Speaking */}
+                      {studyMode === 'speaking' && (
+                        <div className="space-y-6 text-center">
+                          <Card className="space-y-3 p-8">
+                            <button
+                              onClick={() => speakText(current.word)}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-300"
+                            >
+                              <Volume2 className="h-4 w-4" /> Nghe mẫu
+                            </button>
+                            <h3 className="text-4xl font-semibold tracking-tight">{current.word}</h3>
+                            <p className={ui.muted}>{current.meaning}</p>
+                          </Card>
+
+                          <button
+                            onClick={startSpeech}
+                            disabled={isListening}
+                            aria-label="Bắt đầu ghi âm"
+                            className={`mx-auto flex h-20 w-20 items-center justify-center rounded-full text-white shadow-lg transition ${
+                              isListening ? 'animate-pulse bg-red-500' : 'bg-indigo-600 hover:bg-indigo-700'
+                            }`}
+                          >
+                            <Mic className="h-8 w-8" />
+                          </button>
+                          <p className={`text-xs ${ui.muted}`}>
+                            {isListening ? 'Đang nghe, hãy đọc to từ trên' : 'Nhấn micro và đọc to từ trên'}
+                          </p>
+
+                          {spokenText && (
+                            <div
+                              className={`rounded-xl border p-4 text-sm ${
+                                speechResult === 'pass'
+                                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                  : 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300'
+                              }`}
+                            >
+                              <p className="text-xs opacity-80">Hệ thống nghe được: “{spokenText}”</p>
+                              <p className="mt-1 font-semibold">
+                                {speechResult === 'pass' ? 'Phát âm chuẩn xác' : 'Chưa khớp, hãy thử lại'}
+                              </p>
                             </div>
                           )}
-                        </div>
-                        <button onClick={() => handleDelete(item.id)} className="text-slate-400 hover:text-red-500 p-1.5 opacity-0 group-hover:opacity-100 transition">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
-        {/* TAB 2: LUYỆN TẬP 5 CHẾ ĐỘ + SRS */}
-        {activeTab === 'study' && (
-          <div className={`p-6 sm:p-8 rounded-3xl shadow-sm border ${cardBg}`}>
-            <div className="space-y-4 pb-6 border-b border-slate-500/20">
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { id: 'flashcard', label: 'Flashcard SRS', icon: Layers },
-                  { id: 'quiz', label: 'Trắc nghiệm 4 đáp án', icon: HelpCircle },
-                  { id: 'spelling', label: 'Gõ chính tả', icon: Keyboard },
-                  { id: 'dictation', label: 'Nghe chép (Dictation)', icon: Headphones },
-                  { id: 'speaking', label: 'Luyện phát âm (Micro)', icon: Mic },
-                ].map(mode => {
-                  const Icon = mode.icon
-                  return (
-                    <button
-                      key={mode.id}
-                      onClick={() => { setStudyMode(mode.id as any); setStudyQueue([]) }}
-                      className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 border transition ${
-                        studyMode === mode.id
-                          ? 'bg-indigo-600 text-white border-indigo-600 shadow'
-                          : (darkMode ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-600')
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" /> {mode.label}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-                <span className="text-xs font-bold uppercase text-slate-400">Bộ lọc từ vựng:</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { id: 'srs', label: `Đến hạn ôn SRS (${dueSrsCount})` },
-                    { id: 'leech', label: `Từ hay sai (${leechWords.length})` },
-                    { id: 'today', label: 'Hôm nay' },
-                    { id: 'week', label: '7 ngày' },
-                    { id: 'all', label: 'Tất cả' },
-                  ].map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => { setTimeFilter(tab.id as any); setStudyQueue([]) }}
-                      className={`px-3 py-1 rounded-lg text-xs font-semibold border transition ${
-                        timeFilter === tab.id
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : (darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-600')
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {studyQueue.length === 0 ? (
-              <div className="text-center py-14">
-                <p className="mb-6 text-lg">
-                  Có <strong className="text-blue-500 text-2xl">{getFilteredVocabs().length}</strong> từ sẵn sàng luyện tập
-                </p>
-                <button
-                  onClick={() => startStudySession()}
-                  className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold px-8 py-3.5 rounded-2xl shadow-lg inline-flex items-center gap-2"
-                >
-                  <Shuffle className="w-5 h-5" /> Bắt đầu phiên học
-                </button>
-              </div>
-            ) : currentIndex < studyQueue.length ? (
-              <div className="py-6 max-w-lg mx-auto">
-                <div className="flex justify-between text-xs font-bold text-slate-400 mb-2">
-                  <span>THẺ {currentIndex + 1} / {studyQueue.length}</span>
-                  {studyMode !== 'flashcard' && <span className="text-emerald-500">ĐIỂM: {score}</span>}
-                </div>
-                <div className="w-full h-2 bg-slate-500/20 rounded-full overflow-hidden mb-8">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all"
-                    style={{ width: `${((currentIndex + 1) / studyQueue.length) * 100}%` }}
-                  />
-                </div>
-
-                {/* 1. FLASHCARD SRS */}
-                {studyMode === 'flashcard' && (
-                  <>
-                    <div className="relative h-72 w-full [perspective:1000px]">
-                      <motion.div
-                        onClick={() => setIsFlipped(!isFlipped)}
-                        animate={{ rotateY: isFlipped ? 180 : 0 }}
-                        transition={{ duration: 0.45 }}
-                        style={{ transformStyle: 'preserve-3d' }}
-                        className="w-full h-full relative cursor-pointer"
-                      >
-                        <div
-                          style={{ backfaceVisibility: 'hidden' }}
-                          className={`absolute inset-0 border-2 rounded-3xl shadow-md flex flex-col items-center justify-center p-8 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
-                        >
-                          <button
-                            onClick={(e) => speakText(studyQueue[currentIndex].word, e)}
-                            className="absolute top-4 right-4 p-2.5 bg-blue-500/15 text-blue-500 rounded-full"
-                          >
-                            <Volume2 className="w-5 h-5" />
-                          </button>
-                          {studyQueue[currentIndex].part_of_speech && (
-                            <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-400 italic mb-2">
-                              {studyQueue[currentIndex].part_of_speech}
-                            </span>
-                          )}
-                          <p className="text-4xl font-extrabold text-center">{studyQueue[currentIndex].word}</p>
-                          <span className="text-xs text-slate-400 mt-6">Chạm vào thẻ để xem nghĩa & đánh giá độ nhớ</span>
-                        </div>
-
-                        <div
-                          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                          className="absolute inset-0 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-3xl shadow-lg flex flex-col items-center justify-center p-6 text-center space-y-2"
-                        >
-                          <p className="text-3xl font-bold">{studyQueue[currentIndex].meaning}</p>
-                          {studyQueue[currentIndex].collocations && (
-                            <p className="text-xs text-amber-200 font-medium">{studyQueue[currentIndex].collocations}</p>
-                          )}
-                          {studyQueue[currentIndex].example && (
-                            <p className="text-xs text-blue-100 italic bg-white/10 px-3 py-2 rounded-xl">
-                              "{studyQueue[currentIndex].example}"
-                            </p>
-                          )}
-                        </div>
-                      </motion.div>
-                    </div>
-
-                    {/* 3 Nút đánh giá Spaced Repetition */}
-                    <div className="mt-6">
-                      <p className="text-center text-xs text-slate-400 mb-2">Đánh giá mức độ ghi nhớ (Tự động xếp lịch ôn):</p>
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          onClick={() => { updateVocabProgress(studyQueue[currentIndex], 'hard'); advanceToNextCard() }}
-                          className="py-3 rounded-2xl bg-red-500/15 text-red-500 hover:bg-red-500/25 font-semibold text-xs sm:text-sm"
-                        >
-                          Khó (10 phút)
-                        </button>
-                        <button
-                          onClick={() => { updateVocabProgress(studyQueue[currentIndex], 'good'); advanceToNextCard() }}
-                          className="py-3 rounded-2xl bg-amber-500/15 text-amber-500 hover:bg-amber-500/25 font-semibold text-xs sm:text-sm"
-                        >
-                          Tạm nhớ (1 ngày)
-                        </button>
-                        <button
-                          onClick={() => { updateVocabProgress(studyQueue[currentIndex], 'easy'); advanceToNextCard() }}
-                          className="py-3 rounded-2xl bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/25 font-semibold text-xs sm:text-sm"
-                        >
-                          Đã thuộc (5 ngày)
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* 2. TRẮC NGHIỆM 4 ĐÁP ÁN */}
-                {studyMode === 'quiz' && (
-                  <div className="space-y-5">
-                    <div className={`p-8 rounded-3xl border text-center relative ${darkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-                      <button onClick={() => speakText(studyQueue[currentIndex].word)} className="absolute top-4 right-4 p-2 text-blue-500">
-                        <Volume2 className="w-5 h-5" />
-                      </button>
-                      <h3 className="text-3xl font-extrabold">{studyQueue[currentIndex].word}</h3>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3">
-                      {quizOptions.map((opt, idx) => {
-                        const isCorrect = opt === studyQueue[currentIndex].meaning
-                        const isSelected = selectedOption === opt
-                        let style = darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
-                        if (selectedOption) {
-                          if (isCorrect) style = 'bg-emerald-500/20 border-emerald-500 text-emerald-500 font-bold'
-                          else if (isSelected) style = 'bg-red-500/20 border-red-500 text-red-500'
-                        }
-                        return (
-                          <button
-                            key={idx}
-                            onClick={() => handleSelectQuiz(opt)}
-                            className={`p-4 rounded-2xl border-2 text-left transition ${style}`}
-                          >
-                            <span className="font-bold mr-2">{['A.', 'B.', 'C.', 'D.'][idx]}</span> {opt}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    {selectedOption && (
-                      <button onClick={advanceToNextCard} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-semibold">
-                        Câu tiếp theo →
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* 3 & 4. GÕ CHÍNH TẢ & NGHE CHÉP DICTATION */}
-                {(studyMode === 'spelling' || studyMode === 'dictation') && (
-                  <div className="space-y-6">
-                    <div className={`p-8 rounded-3xl border text-center ${darkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-                      <button
-                        onClick={() => speakText(studyQueue[currentIndex].word)}
-                        className="mx-auto mb-3 px-5 py-3 bg-blue-600 text-white rounded-2xl shadow inline-flex items-center gap-2 font-semibold"
-                      >
-                        <Volume2 className="w-5 h-5" /> Nghe phát âm
-                      </button>
-                      {studyMode === 'spelling' ? (
-                        <p className="text-2xl font-bold text-blue-500">{studyQueue[currentIndex].meaning}</p>
-                      ) : (
-                        <p className="text-sm text-slate-400">Chế độ Dictation: Nghe âm thanh và gõ chính xác từ tiếng Anh (đã ẩn nghĩa)</p>
-                      )}
-                    </div>
-
-                    <form onSubmit={handleCheckTextAnswer} className="space-y-4">
-                      <input
-                        type="text"
-                        autoFocus
-                        placeholder="Gõ từ tiếng Anh tại đây..."
-                        value={textInput}
-                        onChange={e => {
-                          setTextInput(e.target.value)
-                          if (answerStatus === 'wrong') setAnswerStatus('idle')
-                        }}
-                        className={`w-full p-4 text-center text-xl font-bold rounded-2xl border-2 focus:outline-none ${
-                          answerStatus === 'correct'
-                            ? 'border-emerald-500 bg-emerald-500/10 text-emerald-500'
-                            : answerStatus === 'wrong'
-                            ? 'border-red-500 bg-red-500/10 text-red-500'
-                            : inputBg
-                        }`}
-                      />
-                      {answerStatus === 'wrong' && (
-                        <p className="text-center text-sm text-red-500">
-                          Sai mất rồi! Gợi ý chữ đầu: <strong>{studyQueue[currentIndex].word[0]}...</strong>
-                        </p>
-                      )}
-                      {answerStatus !== 'correct' ? (
-                        <div className="flex gap-3">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTextInput(studyQueue[currentIndex].word)
-                              setAnswerStatus('correct')
-                            }}
-                            className="px-4 py-3.5 rounded-2xl border border-slate-500/30 text-sm text-slate-400"
-                          >
-                            Hiện đáp án
-                          </button>
-                          <button type="submit" className="flex-1 py-3.5 bg-blue-600 text-white rounded-2xl font-semibold">
-                            Kiểm tra
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-2 text-center">
-                          <p className="text-sm text-slate-400">Nghĩa: <strong>{studyQueue[currentIndex].meaning}</strong></p>
-                          <button type="button" onClick={advanceToNextCard} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-semibold">
-                            Từ tiếp theo →
-                          </button>
+                          <Button variant="secondary" onClick={advance} className="w-full py-2.5">
+                            {speechResult === 'idle' ? 'Bỏ qua' : 'Từ tiếp theo'} <ArrowRight className="h-4 w-4" />
+                          </Button>
                         </div>
                       )}
-                    </form>
-                  </div>
-                )}
-
-                {/* 5. LUYỆN PHÁT ÂM BẰNG MICRO */}
-                {studyMode === 'speaking' && (
-                  <div className="space-y-6 text-center">
-                    <div className={`p-8 rounded-3xl border space-y-3 ${darkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-                      <button onClick={() => speakText(studyQueue[currentIndex].word)} className="text-blue-500 inline-flex items-center gap-1 text-xs font-semibold">
-                        <Volume2 className="w-4 h-4" /> Nghe mẫu
-                      </button>
-                      <h3 className="text-4xl font-extrabold">{studyQueue[currentIndex].word}</h3>
-                      <p className="text-blue-500 font-medium">{studyQueue[currentIndex].meaning}</p>
                     </div>
-
-                    <button
-                      onClick={handleStartSpeechRecognition}
-                      disabled={isListening}
-                      className={`w-20 h-20 rounded-full mx-auto flex items-center justify-center text-white shadow-xl transition ${
-                        isListening ? 'bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-700'
-                      }`}
-                    >
-                      <Mic className="w-9 h-9" />
-                    </button>
-                    <p className="text-xs text-slate-400">
-                      {isListening ? 'Đang nghe... Hãy đọc to từ tiếng Anh!' : 'Bấm vào Micro và đọc to từ trên'}
-                    </p>
-
-                    {spokenText && (
-                      <div className={`p-4 rounded-2xl border ${speechResult === 'pass' ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' : 'bg-red-500/15 border-red-500 text-red-500'}`}>
-                        <p className="text-xs">Hệ thống nghe được: <strong>"{spokenText}"</strong></p>
-                        <p className="font-bold mt-1">
-                          {speechResult === 'pass' ? 'Phát âm chuẩn xác!' : 'Chưa khớp, hãy bấm Micro thử đọc lại nhé!'}
-                        </p>
+                  ) : (
+                    <Card>
+                      <div className="flex flex-col items-center px-6 py-14 text-center">
+                        <CheckCircle2 className="h-12 w-12 text-emerald-500" />
+                        <h3 className="mt-4 text-xl font-semibold">Hoàn thành phiên luyện tập</h3>
+                        {studyMode !== 'flashcard' && (
+                          <p className={`mt-1 text-sm ${ui.muted}`}>Bạn đạt {score} / {studyQueue.length} điểm.</p>
+                        )}
+                        <div className="mt-6 flex gap-2">
+                          <Button variant="secondary" onClick={() => setStudyQueue([])}>Quay lại</Button>
+                          <Button icon={RotateCcw} onClick={() => startStudySession()}>Luyện lượt mới</Button>
+                        </div>
                       </div>
-                    )}
-
-                    <button onClick={advanceToNextCard} className="w-full py-3.5 bg-slate-700 text-white rounded-2xl font-semibold">
-                      Chuyển sang từ tiếp theo →
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-12 space-y-4">
-                <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
-                <h3 className="text-2xl font-bold">Hoàn thành phiên luyện tập!</h3>
-                <button onClick={() => startStudySession()} className="bg-blue-600 text-white font-semibold px-6 py-3 rounded-2xl inline-flex items-center gap-2">
-                  <RotateCcw className="w-4 h-4" /> Luyện tập lượt mới
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 3: DASHBOARD TIẾN ĐỘ, LEECH WORDS & MINI-STORY */}
-        {activeTab === 'dashboard' && (
-          <div className="space-y-8">
-            {/* 4 Thẻ chỉ số học tập */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className={`p-5 rounded-3xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400 font-bold">CHUỖI NGÀY HỌC</p>
-                <p className="text-3xl font-extrabold text-orange-500 mt-1 flex items-center gap-1">
-                  <Flame className="w-7 h-7 fill-orange-500" /> {streak}
-                </p>
-              </div>
-              <div className={`p-5 rounded-3xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400 font-bold">ĐÃ ÔN HÔM NAY</p>
-                <p className="text-3xl font-extrabold text-blue-500 mt-1">{todayReviewed} <span className="text-sm font-normal text-slate-400">lượt</span></p>
-              </div>
-              <div className={`p-5 rounded-3xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400 font-bold">ĐÃ THUỘC LÒNG</p>
-                <p className="text-3xl font-extrabold text-emerald-500 mt-1">{masteredCount} / {vocabs.length}</p>
-              </div>
-              <div className={`p-5 rounded-3xl border ${cardBg}`}>
-                <p className="text-xs text-slate-400 font-bold">CẦN ÔN HÔM NAY</p>
-                <p className="text-3xl font-extrabold text-indigo-500 mt-1">{dueSrsCount}</p>
-              </div>
-            </div>
-
-            {/* Tạo đoạn hội thoại ngắn từ từ vựng mới lưu */}
-            <div className={`p-6 rounded-3xl border space-y-4 ${cardBg}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-bold text-lg flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-indigo-500" /> Hội thoại thực tế từ từ vựng của bạn
-                  </h3>
-                  <p className="text-xs text-slate-400">Ghép 5 từ mới nhất thành đoạn hội thoại ngắn để luyện đọc hiểu ngữ cảnh</p>
-                </div>
-                <button
-                  onClick={handleGenerateMiniStory}
-                  disabled={isGeneratingStory}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-semibold"
-                >
-                  {isGeneratingStory ? 'Đang tạo hội thoại...' : 'Tạo đoạn hội thoại ngay'}
-                </button>
-              </div>
-
-              {storyData && (
-                <div className={`p-5 rounded-2xl border space-y-3 ${darkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-indigo-50/50 border-indigo-100'}`}>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-indigo-500 uppercase">Đoạn hội thoại mẫu</span>
-                    <button onClick={() => speakText(storyData.storyEn)} className="text-xs bg-indigo-600 text-white px-3 py-1 rounded-lg inline-flex items-center gap-1">
-                      <Volume2 className="w-3.5 h-3.5" /> Nghe cả đoạn
-                    </button>
-                  </div>
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed font-medium">
-                    {storyData.storyEn}
-                  </pre>
-                  <div className="pt-2 border-t border-slate-500/20">
-                    <pre className="whitespace-pre-wrap font-sans text-xs text-slate-400 leading-relaxed">
-                      {storyData.storyVi}
-                    </pre>
-                  </div>
+                    </Card>
+                  )}
                 </div>
               )}
-            </div>
 
-            {/* Danh sách Từ hay sai (Leech Words) */}
-            <div className={`p-6 rounded-3xl border space-y-4 ${cardBg}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-bold text-lg flex items-center gap-2 text-red-500">
-                    <AlertTriangle className="w-5 h-5" /> Top từ hay làm sai (Leech Words)
-                  </h3>
-                  <p className="text-xs text-slate-400">Hệ thống tự động ghi nhận những từ học sinh hay chọn nhầm hoặc gõ sai</p>
-                </div>
-                {leechWords.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setActiveTab('study')
-                      setTimeFilter('leech')
-                      startStudySession(leechWords)
-                    }}
-                    className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-semibold"
-                  >
-                    Ôn cấp cứu {leechWords.length} từ này
-                  </button>
-                )}
-              </div>
+              {/* ═════════════ PAGE: PROGRESS ═════════════ */}
+              {page === 'progress' && (
+                <div className="space-y-8">
+                  <PageHeader title="Tiến độ học tập" description="Theo dõi thói quen học và những từ cần chú ý." />
 
-              {leechWords.length === 0 ? (
-                <p className="text-sm text-slate-400 py-4 text-center">Tuyệt vời! Chưa có từ nào bị đánh dấu hay sai.</p>
-              ) : (
-                <div className="divide-y divide-slate-500/15">
-                  {leechWords.map(w => (
-                    <div key={w.id} className="py-3 flex items-center justify-between">
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                    <StatCard label="Chuỗi ngày học" value={streak} hint="ngày liên tiếp" icon={Flame} tone="amber" />
+                    <StatCard label="Ôn hôm nay" value={todayReviewed} hint="lượt" icon={Layers} tone="indigo" />
+                    <StatCard label="Đã thuộc" value={`${masteredCount}/${vocabs.length}`} hint="từ trong sổ" icon={CheckCircle2} tone="emerald" />
+                    <StatCard label="Cần ôn" value={dueCount} hint="từ đến hạn" icon={AlertTriangle} tone="red" />
+                  </div>
+
+                  <Card className="p-5 sm:p-6">
+                    <h3 className="text-sm font-semibold">Từ mới thêm trong 7 ngày qua</h3>
+                    <div className="mt-6 flex h-40 items-end gap-3">
+                      {last7Days.map(d => (
+                        <div key={d.key} className="flex flex-1 flex-col items-center gap-2">
+                          <span className={`text-xs ${ui.muted}`}>{d.count || ''}</span>
+                          <div className="flex w-full flex-1 items-end">
+                            <div
+                              className="w-full rounded-t-md bg-indigo-500/80 transition-all"
+                              style={{ height: `${Math.max(d.count ? 8 : 3, (d.count / maxBar) * 100)}%`, opacity: d.count ? 1 : 0.25 }}
+                            />
+                          </div>
+                          <span className="text-[11px] capitalize text-slate-500">{d.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+
+                  <Card className="p-5 sm:p-6">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <span className="font-bold mr-2">{w.word}</span>
-                        <span className="text-sm text-slate-400">— {w.meaning}</span>
+                        <h3 className="flex items-center gap-2 text-sm font-semibold">
+                          <MessageSquare className="h-4 w-4 text-indigo-600" /> Hội thoại từ từ vựng của bạn
+                        </h3>
+                        <p className={`mt-1 text-sm ${ui.muted}`}>Ghép 5 từ mới nhất thành đoạn hội thoại ngắn để luyện ngữ cảnh.</p>
                       </div>
-                      <span className="text-xs bg-red-500/15 text-red-500 px-2.5 py-1 rounded-full font-bold">
-                        Sai {w.wrong_count} lần
-                      </span>
+                      <Button onClick={handleGenerateStory} loading={isGeneratingStory} icon={Sparkles}>
+                        Tạo hội thoại
+                      </Button>
                     </div>
-                  ))}
+
+                    {storyData && (
+                      <div className="mt-5 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+                        <div className="flex items-center justify-between">
+                          <span className={ui.label}>Đoạn hội thoại mẫu</span>
+                          <Button variant="secondary" icon={Volume2} onClick={() => speakText(storyData.storyEn)} className="px-2.5 py-1 text-xs">
+                            Nghe
+                          </Button>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">{storyData.storyEn}</pre>
+                        <pre className={`whitespace-pre-wrap border-t border-slate-200 pt-3 font-sans text-xs leading-relaxed dark:border-slate-800 ${ui.muted}`}>
+                          {storyData.storyVi}
+                        </pre>
+                      </div>
+                    )}
+                  </Card>
+
+                  <Card className="p-5 sm:p-6">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="flex items-center gap-2 text-sm font-semibold">
+                          <AlertTriangle className="h-4 w-4 text-red-500" /> Từ hay làm sai
+                        </h3>
+                        <p className={`mt-1 text-sm ${ui.muted}`}>Những từ bạn từng chọn nhầm hoặc gõ sai.</p>
+                      </div>
+                      {leechWords.length > 0 && (
+                        <Button
+                          variant="danger"
+                          onClick={() => {
+                            setPage('study')
+                            setTimeFilter('leech')
+                            startStudySession(leechWords)
+                          }}
+                        >
+                          Ôn {leechWords.length} từ này
+                        </Button>
+                      )}
+                    </div>
+
+                    {leechWords.length === 0 ? (
+                      <EmptyState icon={CheckCircle2} title="Chưa có từ nào hay sai" description="Tiếp tục phát huy nhé." />
+                    ) : (
+                      <ul className="mt-4 divide-y divide-slate-100 dark:divide-slate-800">
+                        {leechWords.slice(0, 10).map(w => (
+                          <li key={w.id} className="flex items-center justify-between py-3">
+                            <div>
+                              <span className="text-sm font-semibold">{w.word}</span>
+                              <span className={`ml-2 text-sm ${ui.muted}`}>{w.meaning}</span>
+                            </div>
+                            <Badge tone="red">Sai {w.wrong_count} lần</Badge>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Card>
                 </div>
               )}
-            </div>
-          </div>
-        )}
+
+              {/* ═════════════ PAGE: CLASS (teacher) ═════════════ */}
+              {page === 'class' && isTeacher && (
+                <div className="space-y-6">
+                  <PageHeader
+                    title="Quản lý lớp"
+                    description={`${students.length} học sinh đang theo dõi`}
+                    actions={<Button variant="secondary" onClick={fetchVocabs} icon={RotateCcw}>Làm mới</Button>}
+                  />
+
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                    <StatCard label="Học sinh" value={students.length} icon={Users} tone="indigo" />
+                    <StatCard label="Tổng từ đã lưu" value={students.reduce((s, x) => s + x.total, 0)} icon={BookOpen} tone="indigo" />
+                    <StatCard label="Đã thuộc" value={students.reduce((s, x) => s + x.mastered, 0)} icon={CheckCircle2} tone="emerald" />
+                    <StatCard label="Từ hay sai" value={students.reduce((s, x) => s + x.leech, 0)} icon={AlertTriangle} tone="red" />
+                  </div>
+
+                  <Card className="overflow-hidden">
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
+                      <h3 className="text-sm font-semibold">Danh sách học sinh</h3>
+                      <div className="relative w-full max-w-xs">
+                        <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                        <input
+                          value={studentSearch}
+                          onChange={e => setStudentSearch(e.target.value)}
+                          placeholder="Tìm học sinh"
+                          className={`${ui.field} pl-9`}
+                        />
+                      </div>
+                    </div>
+
+                    {loadingData ? (
+                      <div className="space-y-3 p-4">{[0, 1, 2].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
+                    ) : students.length === 0 ? (
+                      <EmptyState icon={Users} title="Chưa có dữ liệu học sinh" description="Học sinh sẽ xuất hiện ở đây sau khi họ lưu từ vựng đầu tiên." />
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[640px] text-sm">
+                          <thead>
+                            <tr className="border-b border-slate-200 text-left text-xs font-medium text-slate-500 dark:border-slate-800">
+                              <th className="px-4 py-3">Học sinh</th>
+                              <th className="px-4 py-3 text-right">Tổng từ</th>
+                              <th className="px-4 py-3 text-right">Đã thuộc</th>
+                              <th className="px-4 py-3 text-right">Lượt ôn</th>
+                              <th className="px-4 py-3 text-right">Hay sai</th>
+                              <th className="px-4 py-3">Từ sai nhiều nhất</th>
+                              <th className="px-4 py-3 text-right">Gần nhất</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {students.map(s => (
+                              <tr key={s.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <td className="px-4 py-3 font-medium">{s.name}</td>
+                                <td className="px-4 py-3 text-right tabular-nums">{s.total}</td>
+                                <td className="px-4 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{s.mastered}</td>
+                                <td className="px-4 py-3 text-right tabular-nums">{s.reviews}</td>
+                                <td className="px-4 py-3 text-right tabular-nums">
+                                  {s.leech > 0 ? <Badge tone="red">{s.leech}</Badge> : <span className="text-slate-400">0</span>}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex flex-wrap gap-1">
+                                    {s.topWrong.length === 0 ? <span className="text-slate-400">—</span> : s.topWrong.map(w => (
+                                      <Badge key={w.id} tone="red">{w.word} ×{w.wrong_count}</Badge>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className={`px-4 py-3 text-right text-xs ${ui.muted}`}>
+                                  {new Date(s.last).toLocaleDateString('vi-VN')}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
       </main>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Xoá từ vựng?"
+        description={`Từ “${deleteTarget?.word ?? ''}” sẽ bị xoá khỏi sổ và không thể khôi phục.`}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

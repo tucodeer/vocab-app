@@ -169,8 +169,9 @@ export default function VocabApp() {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault()
     setAuthLoading(true)
+    const rememberMe = true
 
-    const rawUsername = email.trim() // Dùng chung biến state email hiện có để khỏi sửa nhiều chỗ
+    const rawUsername = email.trim()
     const authIdentifier = formatUsernameToAuthId(rawUsername)
 
     if (isSignUp) {

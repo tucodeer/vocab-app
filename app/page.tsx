@@ -153,26 +153,28 @@ export default function VocabApp() {
   }
 
   const handleAuth = async (e: React.FormEvent) => {
-  e.preventDefault()
-  setAuthLoading(true)
+    e.preventDefault()
+    setAuthLoading(true)
 
-  if (isSignUp) {
-    const { data, error } = await supabase.auth.signUp({ email, password })
-    if (error) {
-      alert('Lỗi đăng ký: ' + error.message)
-    } else if (data.session) {
-      alert('Đăng ký thành công! Đang vào trang học...')
+    if (isSignUp) {
+      const { data, error } = await supabase.auth.signUp({ email, password })
+      if (error) {
+        alert('Lỗi đăng ký: ' + error.message)
+      } else if (!data.session) {
+        // Tự động đăng nhập ngay nếu Supabase chưa trả về session tức thì
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+        if (signInError) {
+          alert('Đăng ký thành công! Vui lòng bấm Đăng nhập để vào học.')
+          setIsSignUp(false)
+        }
+      }
     } else {
-      alert('Đăng ký thành công! Hãy kiểm tra email để xác nhận hoặc chuyển sang Đăng nhập.')
-      setIsSignUp(false)
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) alert('Sai tài khoản hoặc mật khẩu!')
     }
-  } else {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) alert('Sai tài khoản hoặc mật khẩu!')
-  }
 
-  setAuthLoading(false)
-}
+    setAuthLoading(false)
+  }
 
   // Phân tích từ vựng tự động
   const handleAnalyzeWords = async () => {

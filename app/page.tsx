@@ -465,64 +465,153 @@ export default function VocabApp() {
   
     if (!user) {
     return (
-      <div className={`min-h-screen flex items-center justify-center p-4 transition-colors ${darkMode ? 'bg-slate-950' : 'bg-gradient-to-br from-indigo-50 via-white to-blue-50'}`}>
-        <motion.div
-          initial={{ opacity: 0, y: 20, scale: 0.95 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          className={`p-8 rounded-3xl shadow-xl border max-w-md w-full relative ${cardBg}`}
-        >
-          <button onClick={toggleDarkMode} className="absolute top-5 right-5 p-2 rounded-xl text-slate-400 hover:text-blue-500">
+      <div className={`min-h-screen flex transition-colors ${darkMode ? 'bg-slate-950 text-white' : 'bg-white text-slate-900'}`}>
+        {/* CỘT TRÁI: BRAND SHOWCASE (Ẩn trên điện thoại, hiện đẹp trên máy tính) */}
+        <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-slate-900 text-white p-12 flex-col justify-between">
+          {/* Hiệu ứng ánh sáng nền thương mại */}
+          <div className="absolute -top-24 -left-24 w-96 h-96 bg-blue-600/30 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-600/25 rounded-full blur-3xl pointer-events-none" />
+
+          {/* Header Logo */}
+          <div className="relative z-10 flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-tr from-blue-500 to-indigo-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30">
+              <BookOpen className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <span className="font-bold text-xl tracking-tight">VocabDaily</span>
+              <span className="ml-2 text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30">
+                Enterprise
+              </span>
+            </div>
+          </div>
+
+          {/* Nội dung giá trị cốt lõi */}
+          <div className="relative z-10 max-w-lg space-y-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-xs text-blue-200">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Hệ thống ghi nhớ từ vựng chuẩn Spaced Repetition
+            </div>
+            <h2 className="text-4xl font-bold leading-tight tracking-tight">
+              Làm chủ từ vựng tiếng Anh theo phương pháp khoa học.
+            </h2>
+            <p className="text-slate-300 text-base leading-relaxed">
+              Tích hợp phân tích ngữ cảnh thông minh, luyện phát âm chuẩn bản xứ và hệ thống theo dõi tiến độ trực quan dành cho học viên và giảng viên.
+            </p>
+
+            {/* 3 Thẻ chỉ số tính năng */}
+            <div className="grid grid-cols-3 gap-4 pt-4">
+              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="text-2xl font-bold text-white">5+</div>
+                <div className="text-xs text-slate-400 mt-1">Chế độ luyện tập chuyên sâu</div>
+              </div>
+              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="text-2xl font-bold text-blue-400">AI</div>
+                <div className="text-xs text-slate-400 mt-1">Phân tích ngữ cảnh & Collocation</div>
+              </div>
+              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="text-2xl font-bold text-emerald-400">SRS</div>
+                <div className="text-xs text-slate-400 mt-1">Lặp lại ngắt quãng thông minh</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer Testimonial */}
+          <div className="relative z-10 pt-6 border-t border-white/10 flex items-center justify-between text-xs text-slate-400">
+            <span>© 2026 VocabDaily Learning Platform</span>
+            <span>Bảo mật dữ liệu chuẩn Cloud RLS</span>
+          </div>
+        </div>
+
+        {/* CỘT PHẢI: FORM ĐĂNG NHẬP / ĐĂNG KÝ */}
+        <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-6 sm:p-12 relative">
+          <button
+            onClick={toggleDarkMode}
+            className={`absolute top-6 right-6 p-2.5 rounded-xl border transition ${
+              darkMode ? 'border-slate-800 bg-slate-900 text-slate-300 hover:text-white' : 'border-slate-200 bg-slate-50 text-slate-600 hover:text-slate-900'
+            }`}
+            title="Chuyển giao diện Sáng/Tối"
+          >
             {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
-          <div className="w-12 h-12 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-4 shadow-lg">
-            <BookOpen className="w-6 h-6" />
-          </div>
-          <h1 className="text-2xl font-bold text-center mb-1">VocabDaily Pro</h1>
-          <p className="text-slate-400 text-center text-sm mb-6">
-            {isSignUp ? 'Tạo tài khoản học tập mới' : 'Đăng nhập bằng tài khoản của bạn'}
-          </p>
 
-          <form onSubmit={handleAuth} className="space-y-4">
-            <input
-              type="email"
-              required
-              placeholder="Nhập email (VD: tenban@gmail.com)"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 ${inputBg}`}
-            />
-            <input
-              type="password"
-              required
-              minLength={6}
-              placeholder="Mật khẩu (tối thiểu 6 ký tự)..."
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 ${inputBg}`}
-            />
-            <button
-              disabled={authLoading}
-              className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium py-3 rounded-xl shadow-md hover:opacity-95 transition"
-            >
-              {authLoading
-                ? 'Đang xử lý...'
-                : isSignUp
-                ? 'Đăng ký tài khoản'
-                : 'Bắt đầu học ngay'}
-            </button>
-          </form>
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-md space-y-8"
+          >
+            {/* Logo mobile */}
+            <div className="lg:hidden flex items-center gap-2.5">
+              <div className="w-9 h-9 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center text-white">
+                <BookOpen className="w-5 h-5" />
+              </div>
+              <span className="font-bold text-xl">VocabDaily Pro</span>
+            </div>
 
-          <div className="mt-5 text-center text-sm text-slate-400">
-            {isSignUp ? 'Đã có tài khoản rồi? ' : 'Chưa có tài khoản? '}
-            <button
-              type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-blue-500 font-semibold hover:underline"
-            >
-              {isSignUp ? 'Đăng nhập ngay' : 'Tự đăng ký mới'}
-            </button>
-          </div>
-        </motion.div>
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                {isSignUp ? 'Tạo tài khoản học viên' : 'Chào mừng trở lại'}
+              </h1>
+              <p className="text-slate-500 dark:text-slate-400 text-sm mt-2">
+                {isSignUp
+                  ? 'Khởi tạo không gian học từ vựng cá nhân hóa miễn phí.'
+                  : 'Đăng nhập để tiếp tục lộ trình ôn tập hôm nay của bạn.'}
+              </p>
+            </div>
+
+            <form onSubmit={handleAuth} className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Địa chỉ Email
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="name@company.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Mật khẩu
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  placeholder="Tối thiểu 6 ký tự"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
+                />
+              </div>
+
+              <button
+                disabled={authLoading}
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-3.5 rounded-xl shadow-lg shadow-blue-600/20 transition-all active:scale-[0.99]"
+              >
+                {authLoading
+                  ? 'Đang xác thực...'
+                  : isSignUp
+                  ? 'Tạo tài khoản & Bắt đầu học'
+                  : 'Đăng nhập vào hệ thống'}
+              </button>
+            </form>
+
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 text-center text-sm text-slate-500">
+              {isSignUp ? 'Đã có tài khoản trên hệ thống? ' : 'Chưa có tài khoản học tập? '}
+              <button
+                type="button"
+                onClick={() => setIsSignUp(!isSignUp)}
+                className="text-blue-600 dark:text-blue-400 font-semibold hover:underline"
+              >
+                {isSignUp ? 'Đăng nhập ngay' : 'Đăng ký miễn phí'}
+              </button>
+            </div>
+          </motion.div>
+        </div>
       </div>
     )
   }

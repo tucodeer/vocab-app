@@ -605,20 +605,7 @@ export default function VocabApp() {
             </div>
 
             <form onSubmit={handleAuth} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Địa chỉ Email
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="name@company.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
-                />
-              </div>
-
+              {/* Ô 1: Tên đăng nhập / Biệt danh / ID */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   Tên đăng nhập / Biệt danh / ID
@@ -627,9 +614,27 @@ export default function VocabApp() {
                   type="text"
                   required
                   minLength={3}
+                  autoComplete="username"
                   placeholder="VD: minhanh01 hoặc bietdanh"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
+                  className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
+                />
+              </div>
+
+              {/* Ô 2: Mật khẩu (bị thiếu ở bản trước) */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Mật khẩu
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  autoComplete="current-password"
+                  placeholder="Tối thiểu 6 ký tự"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
                   className={`w-full px-4 py-3 border rounded-xl text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 ${inputBg}`}
                 />
               </div>

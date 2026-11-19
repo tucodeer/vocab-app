@@ -37,6 +37,7 @@ export default function VocabApp() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
+  const [isSignUp, setIsSignUp] = useState(false)
   const [darkMode, setDarkMode] = useState(false)
   const isTeacher = user?.email === 'tujhoang1202@gmail.com'
 
@@ -151,13 +152,27 @@ export default function VocabApp() {
     }
   }
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setAuthLoading(true)
+  const handleAuth = async (e: React.FormEvent) => {
+  e.preventDefault()
+  setAuthLoading(true)
+
+  if (isSignUp) {
+    const { data, error } = await supabase.auth.signUp({ email, password })
+    if (error) {
+      alert('Lỗi đăng ký: ' + error.message)
+    } else if (data.session) {
+      alert('Đăng ký thành công! Đang vào trang học...')
+    } else {
+      alert('Đăng ký thành công! Hãy kiểm tra email để xác nhận hoặc chuyển sang Đăng nhập.')
+      setIsSignUp(false)
+    }
+  } else {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) alert('Sai tài khoản hoặc mật khẩu!')
-    setAuthLoading(false)
   }
+
+  setAuthLoading(false)
+}
 
   // Phân tích từ vựng tự động
   const handleAnalyzeWords = async () => {
@@ -445,7 +460,8 @@ export default function VocabApp() {
     ? 'bg-slate-800/80 border-slate-700 text-slate-100 focus:bg-slate-800'
     : 'bg-slate-50 border-slate-200 text-slate-800 focus:bg-white'
 
-  if (!user) {
+  
+    if (!user) {
     return (
       <div className={`min-h-screen flex items-center justify-center p-4 transition-colors ${darkMode ? 'bg-slate-950' : 'bg-gradient-to-br from-indigo-50 via-white to-blue-50'}`}>
         <motion.div
@@ -460,13 +476,15 @@ export default function VocabApp() {
             <BookOpen className="w-6 h-6" />
           </div>
           <h1 className="text-2xl font-bold text-center mb-1">VocabDaily Pro</h1>
-          <p className="text-slate-400 text-center text-sm mb-6">Đăng nhập bằng tài khoản học viên</p>
+          <p className="text-slate-400 text-center text-sm mb-6">
+            {isSignUp ? 'Tạo tài khoản học tập mới' : 'Đăng nhập bằng tài khoản của bạn'}
+          </p>
 
-          <form onSubmit={handleLogin} className="space-y-4">
+          <form onSubmit={handleAuth} className="space-y-4">
             <input
               type="email"
               required
-              placeholder="Tài khoản (VD: hocsinh@vocab.vn)"
+              placeholder="Nhập email (VD: tenban@gmail.com)"
               value={email}
               onChange={e => setEmail(e.target.value)}
               className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 ${inputBg}`}
@@ -474,18 +492,34 @@ export default function VocabApp() {
             <input
               type="password"
               required
-              placeholder="Mật khẩu..."
+              minLength={6}
+              placeholder="Mật khẩu (tối thiểu 6 ký tự)..."
               value={password}
               onChange={e => setPassword(e.target.value)}
               className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 ${inputBg}`}
             />
             <button
               disabled={authLoading}
-              className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium py-3 rounded-xl shadow-md"
+              className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium py-3 rounded-xl shadow-md hover:opacity-95 transition"
             >
-              {authLoading ? 'Đang kiểm tra...' : 'Bắt đầu học ngay'}
+              {authLoading
+                ? 'Đang xử lý...'
+                : isSignUp
+                ? 'Đăng ký tài khoản'
+                : 'Bắt đầu học ngay'}
             </button>
           </form>
+
+          <div className="mt-5 text-center text-sm text-slate-400">
+            {isSignUp ? 'Đã có tài khoản rồi? ' : 'Chưa có tài khoản? '}
+            <button
+              type="button"
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-blue-500 font-semibold hover:underline"
+            >
+              {isSignUp ? 'Đăng nhập ngay' : 'Tự đăng ký mới'}
+            </button>
+          </div>
         </motion.div>
       </div>
     )
